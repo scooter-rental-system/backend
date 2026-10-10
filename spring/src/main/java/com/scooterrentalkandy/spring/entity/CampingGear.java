@@ -37,4 +37,7 @@ public class CampingGear {
 
   @OneToMany(mappedBy = "campingGear", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
   private List<BookingGear> bookingGears;
+
+  @Column(nullable = false)
+  private boolean active = true;
 }
