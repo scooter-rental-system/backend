@@ -36,6 +36,7 @@ public class BookingGear {
     private Booking booking;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "gear_id", nullable = false)
     private CampingGear campingGear;
 
     /** Number of units of this gear item included in the booking. */
