@@ -14,7 +14,7 @@ public interface BookingGearRepository extends JpaRepository<BookingGear, UUID> 
     List<BookingGear> findByBooking_BookingId(UUID bookingId);
 
     /** All bookings that include a specific gear item (inventory tracking). */
-    List<BookingGear> findByCampingGear_GearId(UUID gearId);
+    List<BookingGear> findByGearItem_GearItemId(UUID gearItemId);
 
     /** Remove all gear items from a booking (used on booking cancellation). */
     void deleteByBooking_BookingId(UUID bookingId);

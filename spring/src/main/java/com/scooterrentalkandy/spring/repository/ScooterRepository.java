@@ -1,23 +1,33 @@
 package com.scooterrentalkandy.spring.repository;
 
-import com.scooterrentalkandy.spring.common.enums.ScooterStatus;
-import com.scooterrentalkandy.spring.entity.Scooter;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
-
+import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import com.scooterrentalkandy.spring.entity.Scooter;
+import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
 
-@Repository
 public interface ScooterRepository extends JpaRepository<Scooter, UUID> {
 
-    /** Find a scooter by its official registration plate number. */
-    Optional<Scooter> findByRegistrationNo(String registrationNo);
+    /** Row lock used to serialise concurrent bookings of the same scooter. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from Scooter s where s.scooterId = :id")
+    Optional<Scooter> findByIdForUpdate(UUID id);
 
-    /** Check whether a registration number already exists in the fleet. */
-    boolean existsByRegistrationNo(String registrationNo);
+    List<Scooter> findAllByOrderByCodeAsc();
 
-    /** Fetch all scooters with a given fleet status (e.g., AVAILABLE). */
+    List<Scooter> findByDeletedFalseOrderByCodeAsc();
+
     List<Scooter> findByStatus(ScooterStatus status);
+
+    Optional<Scooter> findByCodeIgnoreCase(String code);
+
+    boolean existsByCodeIgnoreCase(String code);
+
+    boolean existsByPlateNumberIgnoreCase(String plateNumber);
+
+    long countByStatusAndDeletedFalse(ScooterStatus status);
 }
