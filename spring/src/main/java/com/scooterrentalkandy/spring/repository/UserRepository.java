@@ -1,7 +1,7 @@
 package com.scooterrentalkandy.spring.repository;
 
-import com.scooterrentalkandy.spring.common.enums.UserRole;
 import com.scooterrentalkandy.spring.entity.User;
+import com.scooterrentalkandy.spring.entity.enums.Role;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -17,13 +17,13 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     /** Check whether an email address is already registered. */
     boolean existsByEmail(String email);
+    List<User> findByRoleOrderByCreatedAtDesc(Role role);
 
-    /** Check whether a NIC number is already registered. */
-    boolean existsByNicNumber(String nicNumber);
+    List<User> findByRoleAndIsActiveTrue(Role role);
 
-    /** Fetch all users with a specific role (admin management). */
-    List<User> findByRole(UserRole role);
+    List<User> findByRoleInAndIsActiveTrue(java.util.Collection<Role> roles);
 
-    /** Fetch all active / inactive users (admin account management). */
-    List<User> findByIsActive(Boolean isActive);
+    long countByRole(Role role);
+
+    long countByRoleAndCreatedAtBetween(Role role, java.time.LocalDateTime from, java.time.LocalDateTime to);
 }

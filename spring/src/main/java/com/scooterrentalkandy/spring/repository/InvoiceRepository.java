@@ -11,7 +11,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface InvoiceRepository extends JpaRepository<Invoice, UUID> {
 
     @EntityGraph(attributePaths = {"booking", "booking.customer", "lines"})
-    List<Invoice> findByBookingIdOrderByIssuedAtAsc(UUID bookingId);
+    List<Invoice> findByBooking_BookingIdOrderByIssuedAtAsc(UUID bookingId);
 
     @EntityGraph(attributePaths = {"booking", "booking.customer"})
     List<Invoice> findTop300ByOrderByIssuedAtDesc();
@@ -19,6 +19,6 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID> {
     @EntityGraph(attributePaths = {"booking", "booking.customer", "lines"})
     Optional<Invoice> findWithLinesById(UUID id);
 
-    Optional<Invoice> findFirstByBookingIdAndKind(UUID bookingId, Invoice.Kind kind);
+    Optional<Invoice> findFirstByBooking_BookingIdAndKind(UUID bookingId, Invoice.Kind kind);
 }
 

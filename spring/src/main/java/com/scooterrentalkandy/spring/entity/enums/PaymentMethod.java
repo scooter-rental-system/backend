@@ -1,4 +1,4 @@
-package com.scooterrentalkandy.spring.common.enums;
+package com.scooterrentalkandy.spring.entity.enums;
 
 public enum PaymentMethod {
     CARD, ONLINE, CASH

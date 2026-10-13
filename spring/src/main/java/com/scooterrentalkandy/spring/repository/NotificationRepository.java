@@ -8,9 +8,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface NotificationRepository extends JpaRepository<Notification, UUID> {
 
-    List<Notification> findByUserIdAndChannelOrderByCreatedAtDesc(UUID userId, Notification.Channel channel);
+    List<Notification> findByUser_UserIdAndChannelOrderByCreatedAtDesc(UUID userId, Notification.Channel channel);
 
-    long countByUserIdAndChannelAndReadAtIsNull(UUID userId, Notification.Channel channel);
+    long countByUser_UserIdAndChannelAndReadAtIsNull(UUID userId, Notification.Channel channel);
 
     @EntityGraph(attributePaths = "user")
     List<Notification> findTop200ByOrderByCreatedAtDesc();
