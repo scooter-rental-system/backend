@@ -1,13 +1,13 @@
 package com.scooterrentalkandy.spring.entity;
 
-import com.scooterrentalkandy.spring.common.enums.UserRole;
 
-import com.scooterrentalkandy.spring.common.enums.ScooterStatus;
+import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
 import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -25,39 +25,63 @@ public class Scooter {
     @Column(name = "scooter_id", nullable = false, updatable = false)
     private UUID scooterId;
 
-    @Column(name = "model", nullable = false, length = 150)
+    @Column(nullable = false, unique = true)
+    private String code;
+
+    @Column(nullable = false)
     private String model;
 
-    @Column(name = "registration_no", nullable = false, unique = true, length = 30)
-    private String registrationNo;
+    @Column(name = "plate_number", nullable = false, unique = true)
+    private String plateNumber;
+
+    @Column(name = "engine_cc")
+    private Integer engineCc;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 20)
-    private ScooterStatus status;
+    @Column(nullable = false)
+    private ScooterStatus status = ScooterStatus.AVAILABLE;
 
-    /** Rental charge per hour in LKR. */
+    /** SDS 2.2: rental charge per hour (LKR). */
     @Column(name = "hourly_rate", nullable = false, precision = 10, scale = 2)
     private BigDecimal hourlyRate;
 
-    /** Distance-based charge per kilometer in LKR. */
+    /** SDS 2.2: distance charge per kilometre (LKR). */
     @Column(name = "per_km_rate", nullable = false, precision = 10, scale = 2)
     private BigDecimal perKmRate;
 
-    /** AWS S3 URL for the scooter image (JPEG/PNG, max 5 MB). */
-    @Column(name = "image_url", length = 500)
+    /** SDS 2.2: cumulative kilometres travelled. */
+    @Column(name = "total_mileage", nullable = false, precision = 10, scale = 2)
+    private BigDecimal totalMileage = BigDecimal.ZERO.setScale(2);
+
+    private Double latitude;
+
+    private Double longitude;
+
+    @Column(name = "image_url")
     private String imageUrl;
 
-    /** Cumulative distance travelled in kilometers. */
-    @Column(name = "total_mileage", precision = 10, scale = 2)
-    @Builder.Default
-    private BigDecimal totalMileage = BigDecimal.ZERO;
+    @Column(length = 2000)
+    private String description;
 
-    /** Date of most recent maintenance service (ISO 8601). */
-    @Column(name = "last_service_date")
-    private LocalDate lastServiceDate;
+    /** Last-known position, time and speed from any ping (idle pings are not stored as GPS logs). */
+    @Column(name = "last_seen_at")
+    private LocalDateTime lastSeenAt;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+    /** Speed of the last ping; a violation fires when it goes from <= 60 to > 60 km/h (SDS 4.3). */
+    @Column(name = "last_speed_kmh", precision = 5, scale = 2)
+    private BigDecimal lastSpeedKmh;
 
-    @OneToMany(mappedBy = "scooter", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<Booking> bookings;
+    /** SDS 8.3: scooters leaving the fleet are soft-deleted and kept for history. */
+    @Column(nullable = false)
+    private boolean deleted;
+
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
+
+    @PrePersist
+    void onCreate() {
+        if (createdAt == null) {
+            createdAt = LocalDateTime.now();
+        }
+    }
 }

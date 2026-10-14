@@ -1,12 +1,13 @@
 package com.scooterrentalkandy.spring.entity;
 
-import com.scooterrentalkandy.spring.common.enums.UserRole;
+import com.scooterrentalkandy.spring.entity.enums.Role;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 import jakarta.persistence.Id;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -16,7 +17,6 @@ import java.util.UUID;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
 public class User {
 
     @Id
@@ -24,11 +24,8 @@ public class User {
     @Column(name = "user_id", nullable = false, updatable = false)
     private UUID userId;
 
-    @Column(name = "first_name", nullable = false, length = 100)
-    private String firstName;
-
-    @Column(name = "last_name", nullable = false, length = 100)
-    private String lastName;
+    @Column(name = "full_name", nullable = false)
+    private String fullName;
 
     @Column(name = "email", nullable = false, unique = true, length = 255)
     private String email;
@@ -50,20 +47,34 @@ public class User {
 
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 20)
-    @Builder.Default
-    private UserRole role = UserRole.USER;
+    private Role role;
+
+    @Column(name = "id_document_number")
+    private String idDocumentNumber;
+
+    @Column(name = "driving_license_no")
+    private String drivingLicenseNo;
+
+    private String country;
 
     @Column(name = "is_active", nullable = false)
-    @Builder.Default
     private Boolean isActive = true;
 
-    @CreationTimestamp
-    @Column(name = "created_at", nullable = false, updatable = false)
-    private Instant createdAt;
 
     // ── Relationships ──────────────────────────────────────────────────────────
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<Booking> bookings;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
+
+    @PrePersist
+    void onCreate() {
+        if (createdAt == null) {
+            createdAt = LocalDateTime.now();
+        }
+    }
 
 }

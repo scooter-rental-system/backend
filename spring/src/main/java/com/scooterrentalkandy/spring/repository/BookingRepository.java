@@ -1,62 +1,66 @@
 package com.scooterrentalkandy.spring.repository;
 
-import com.scooterrentalkandy.spring.common.enums.BookingStatus;
-import com.scooterrentalkandy.spring.entity.Booking;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
-import org.springframework.stereotype.Repository;
-
-import java.time.Instant;
+import jakarta.persistence.LockModeType;
+import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import com.scooterrentalkandy.spring.entity.Booking;
+import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
+import org.springframework.data.jpa.repository.EntityGraph;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
-@Repository
 public interface BookingRepository extends JpaRepository<Booking, UUID> {
 
-    /** All bookings placed by a specific user (booking history). */
-    List<Booking> findByUser_UserId(UUID userId);
+    /** Serialises payment, completion and cancellation of the same booking. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select b from Booking b where b.bookingId = :id")
+    Optional<Booking> findByIdForUpdate(@Param("id") UUID id);
 
-    /** All bookings associated with a specific scooter. */
-    List<Booking> findByScooter_ScooterId(UUID scooterId);
+    /** SDS 4.2 step 4: a scooter is taken while it has a pending or active booking. */
+    boolean existsByScooter_ScooterIdAndStatusIn(UUID scooterId, Collection<BookingStatus> statuses);
 
-    /** All bookings in a given lifecycle state. */
-    List<Booking> findByStatus(BookingStatus status);
+    @Query("select distinct b.scooter.scooterId from Booking b where b.status in :statuses")
+    List<UUID> findScooterIdsWithStatus(@Param("statuses") Collection<BookingStatus> statuses);
 
-    /**
-     * Check whether there is already an ACTIVE booking for a scooter —
-     * used to enforce the single-active-booking-per-scooter business rule.
-     */
-    boolean existsByScooter_ScooterIdAndStatus(UUID scooterId, BookingStatus status);
+    @EntityGraph(attributePaths = {"scooter", "user"})
+    List<Booking> findByUser_UserIdOrderByCreatedAtDesc(UUID userId);
 
-    /**
-     * Find the single active booking for a scooter (used by GPS billing flow).
-     */
-    Optional<Booking> findByScooter_ScooterIdAndStatus(UUID scooterId, BookingStatus status);
+    @EntityGraph(attributePaths = {"scooter", "user"})
+    List<Booking> findAllByOrderByCreatedAtDesc();
 
-    /**
-     * All bookings for a user filtered by status (e.g., show only COMPLETED).
-     */
-    List<Booking> findByUser_UserIdAndStatus(UUID userId, BookingStatus status);
+    @EntityGraph(attributePaths = {"scooter", "user"})
+    List<Booking> findByStatusOrderByStartTimeAsc(BookingStatus status);
 
-    /**
-     * Admin report query: bookings whose startTime falls within a date range.
-     */
-    @Query("SELECT b FROM Booking b WHERE b.startTime >= :from AND b.startTime <= :to")
-    List<Booking> findByStartTimeBetween(@Param("from") Instant from,
-                                         @Param("to")   Instant to);
+    @EntityGraph(attributePaths = {"scooter", "user", "gear", "gear.gearItem"})
+    Optional<Booking> findWithDetailsByBookingId(UUID bookingId);
 
-    /**
-     * Admin report query: bookings by status within a date range.
-     */
+    Optional<Booking> findFirstByScooter_ScooterIdAndStatus(UUID scooterId, BookingStatus status);
+
+    /** Rentals under way: started and not yet ended. */
+    @EntityGraph(attributePaths = {"scooter"})
+    List<Booking> findByStatusAndStartTimeLessThanEqualAndEndedAtIsNull(BookingStatus status, LocalDateTime now);
+
+    List<Booking> findByStatusAndCreatedAtBefore(BookingStatus status, LocalDateTime cutoff);
+
+    @EntityGraph(attributePaths = {"scooter", "user"})
+    List<Booking> findByStatusAndStartTimeBetween(BookingStatus status, LocalDateTime from, LocalDateTime to);
+
+    /** Rentals whose time overlaps the window (open rentals run until now). */
+    @EntityGraph(attributePaths = {"scooter"})
     @Query("""
-           SELECT b FROM Booking b
-           WHERE b.status = :status
-             AND b.startTime >= :from
-             AND b.startTime <= :to
-           """)
-    List<Booking> findByStatusAndStartTimeBetween(@Param("status") BookingStatus status,
-                                                  @Param("from")   Instant from,
-                                                  @Param("to")     Instant to);
+            select b from Booking b
+            where b.status in :statuses and b.startTime < :to and (b.endTime is null or b.endTime > :from)
+            """)
+    List<Booking> findRentalsOverlapping(@Param("statuses") Collection<BookingStatus> statuses,
+                                         @Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    @EntityGraph(attributePaths = {"scooter", "user"})
+    List<Booking> findByCreatedAtBetween(LocalDateTime from, LocalDateTime to);
+
+    long countByStatus(BookingStatus status);
 }

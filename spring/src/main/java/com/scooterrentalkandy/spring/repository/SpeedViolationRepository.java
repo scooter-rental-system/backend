@@ -13,5 +13,5 @@ public interface SpeedViolationRepository extends JpaRepository<SpeedViolation, 
     @EntityGraph(attributePaths = {"scooter", "booking", "booking.customer"})
     List<SpeedViolation> findAllByOrderByRecordedAtDescCreatedAtDesc(Pageable page);
 
-    List<SpeedViolation> findByScooterIdOrderByRecordedAtAsc(UUID scooterId);
+    List<SpeedViolation> findByScooter_ScooterIdOrderByRecordedAtAsc(UUID scooterId);
 }

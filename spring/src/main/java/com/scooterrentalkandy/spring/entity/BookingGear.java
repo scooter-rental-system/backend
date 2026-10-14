@@ -4,26 +4,13 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.util.UUID;
+import lombok.Getter;
+import lombok.Setter;
 
-/**
- * Junction (weak) entity implementing the M:N relationship between
- * {@link Booking} and {@link CampingGear}, carrying a {@code quantity} attribute.
- */
 @Entity
-@Table(
-        name = "booking_gears",
-        uniqueConstraints = {
-                @UniqueConstraint(
-                        name = "uq_booking_gear",
-                        columnNames = {"booking_id", "gear_id"}
-                )
-        }
-)
+@Table(name = "booking_gear")
 @Getter
 @Setter
-@NoArgsConstructor
-@AllArgsConstructor
-@Builder
 public class BookingGear {
 
     @Id
@@ -36,10 +23,9 @@ public class BookingGear {
     private Booking booking;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "gear_id", nullable = false)
-    private CampingGear campingGear;
+    @JoinColumn(name = "gear_item_id")
+    private GearItem gearItem;
 
-    /** Number of units of this gear item included in the booking. */
-    @Column(name = "quantity", nullable = false)
-    private Integer quantity;
+    @Column(nullable = false)
+    private int quantity;
 }
