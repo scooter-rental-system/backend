@@ -7,5 +7,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface ContractRepository extends JpaRepository<Contract, UUID> {
 
-    Optional<Contract> findByBookingId(UUID bookingId);
+    Optional<Contract> findByBooking_BookingId(UUID bookingId);
 }
