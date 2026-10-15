@@ -1,21 +1,19 @@
 package com.scooterrentalkandy.spring.repository;
 
-import com.scooterrentalkandy.spring.entity.BookingGear;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
-
-import java.util.List;
+import java.util.Collection;
 import java.util.UUID;
+import com.scooterrentalkandy.spring.entity.BookingGear;
+import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
-@Repository
 public interface BookingGearRepository extends JpaRepository<BookingGear, UUID> {
 
-    /** All gear line-items for a specific booking. */
-    List<BookingGear> findByBooking_BookingId(UUID bookingId);
-
-    /** All bookings that include a specific gear item (inventory tracking). */
-    List<BookingGear> findByGearItem_GearItemId(UUID gearItemId);
-
-    /** Remove all gear items from a booking (used on booking cancellation). */
-    void deleteByBooking_BookingId(UUID bookingId);
+    @Query("""
+            select coalesce(sum(bg.quantity), 0) from BookingGear bg
+            where bg.gearItem.gearItemId = :gearItemId and bg.booking.status in :statuses
+            """)
+    long sumReservedQuantity(@Param("gearItemId") UUID gearItemId,
+                             @Param("statuses") Collection<BookingStatus> statuses);
 }
