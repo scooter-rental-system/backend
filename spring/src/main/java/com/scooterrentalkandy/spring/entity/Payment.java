@@ -71,7 +71,7 @@ public class Payment {
 
   /** NULL until payment is successfully processed. */
   @Column(name = "paid_at")
-  private Instant paidAt;
+  private LocalDateTime paidAt;
 
   @Column(name = "created_at", nullable = false)
   private LocalDateTime createdAt;

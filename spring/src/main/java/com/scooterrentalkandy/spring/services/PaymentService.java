@@ -167,7 +167,7 @@ public class PaymentService {
         }
         if (e.succeeded()) {
             p.setStatus(PaymentStatus.SUCCESS);
-            p.setPaidAt(Instant.now(clock));
+            p.setPaidAt(LocalDateTime.now(clock));
             p.setPaymentMethodRef(e.paymentMethodRef());
             p.setCardLast4(e.cardLast4());
             p.setFailureReason(null);
@@ -189,7 +189,7 @@ public class PaymentService {
             p.setAmount(p.getAmount().add(p.getBalanceDue()));
             p.setBalanceDue(null);
             p.setBalanceIntentId(null);
-            p.setPaidAt(Instant.now(clock));
+            p.setPaidAt(LocalDateTime.now(clock));
             p.setPaymentMethodRef(e.paymentMethodRef());
             p.setCardLast4(e.cardLast4());
             p.setFailureReason(null);
@@ -219,7 +219,7 @@ public class PaymentService {
                 settle(p, p.getBalanceIntentId(), PaymentTransaction.Status.FAILED, "Balance paid with the saved card");
                 p.setBalanceIntentId(null);
             }
-            p.setPaidAt(Instant.now(clock));
+            p.setPaidAt(LocalDateTime.now(clock));
             p.setFailureReason(null);
             return true;
         }

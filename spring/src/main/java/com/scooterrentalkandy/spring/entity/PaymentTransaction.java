@@ -30,7 +30,8 @@ public class PaymentTransaction {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
+    @Column(name = "payment_transaction_id", nullable = false, updatable = false)
+    private UUID paymentTransactionId;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "payment_id")

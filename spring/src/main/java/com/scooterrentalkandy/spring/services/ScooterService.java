@@ -31,7 +31,7 @@ public class ScooterService {
     public List<ScooterResponse> listBookable() {
         Set<UUID> held = heldScooterIds();
         return scooters.findByDeletedFalseOrderByCodeAsc().stream()
-                .map(s -> ScooterMapper.toResponse(s, held.contains(s.getId())))
+                .map(s -> ScooterMapper.toResponse(s, held.contains(s.getScooterId())))
                 .toList();
     }
 
@@ -39,7 +39,7 @@ public class ScooterService {
     public List<ScooterResponse> listAll() {
         Set<UUID> held = heldScooterIds();
         return scooters.findAllByOrderByCodeAsc().stream()
-                .map(s -> ScooterMapper.toResponse(s, held.contains(s.getId())))
+                .map(s -> ScooterMapper.toResponse(s, held.contains(s.getScooterId())))
                 .toList();
     }
 
@@ -105,7 +105,7 @@ public class ScooterService {
     }
 
     private ScooterResponse response(Scooter s) {
-        return ScooterMapper.toResponse(s, bookings.existsByScooterIdAndStatusIn(s.getId(), BookingStatus.BLOCKING));
+        return ScooterMapper.toResponse(s, bookings.existsByScooter_ScooterIdAndStatusIn(s.getScooterId(), BookingStatus.BLOCKING));
     }
 
     private Set<UUID> heldScooterIds() {

@@ -5,8 +5,6 @@ import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 import jakarta.persistence.Id;
-
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -39,11 +37,6 @@ public class User {
     @Column(name = "phone", nullable = false, length = 20)
     private String phone;
 
-    /**
-     * AES-256 encrypted at rest before persistence.
-     */
-    @Column(name = "nic_number", nullable = false, unique = true, length = 20)
-    private String nicNumber;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 20)

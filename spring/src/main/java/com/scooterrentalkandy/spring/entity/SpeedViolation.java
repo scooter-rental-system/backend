@@ -25,7 +25,8 @@ public class SpeedViolation {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
+    @Column(name = "speed_violation_id", nullable = false, updatable = false)
+    private UUID speedViolationId;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "scooter_id")
