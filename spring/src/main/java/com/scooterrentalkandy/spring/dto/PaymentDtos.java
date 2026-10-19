@@ -47,7 +47,7 @@ public final class PaymentDtos {
             String cardLast4,
             BigDecimal balanceDue,
             String failureReason,
-            Instant paidAt,
+            LocalDateTime paidAt,
             LocalDateTime createdAt,
             /** Provider calls for this payment; included for a single booking, omitted (null) in lists. */
             List<TransactionResponse> transactions) {

@@ -26,7 +26,7 @@ public final class PaymentMapper {
     }
 
     public static TransactionResponse toResponse(PaymentTransaction t) {
-        return new TransactionResponse(t.getId(), t.getKind(), t.getProviderRef(), t.getAmount(), t.getStatus(),
+        return new TransactionResponse(t.getPaymentTransactionId(), t.getKind(), t.getProviderRef(), t.getAmount(), t.getStatus(),
                 t.getFailureReason(), t.getCreatedAt());
     }
 }
