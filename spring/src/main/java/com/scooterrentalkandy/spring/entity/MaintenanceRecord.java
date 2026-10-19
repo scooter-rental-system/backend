@@ -32,7 +32,9 @@ public class MaintenanceRecord {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
+    @Column(name = "maintenance_record_id", nullable = false, updatable = false)
+    private UUID maintenanceRecordId;
+
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "scooter_id")

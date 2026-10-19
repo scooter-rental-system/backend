@@ -20,7 +20,7 @@ public final class InvoiceMapper {
                         l.getAmount()))
                 .toList()
                 : List.of();
-        return new InvoiceResponse(i.getId(), i.getInvoiceNumber(), b.getBookingId(), b.getReference(),
+        return new InvoiceResponse(i.getInvoiceId(), i.getInvoiceNumber(), b.getBookingId(), b.getReference(),
                 b.getUser().getFullName(), b.getUser().getEmail(), i.getKind(), i.getStatus(),
                 payment == null ? null : payment.getStatus(),
                 payment != null && i.getKind() == Invoice.Kind.FINAL ? payment.getBalanceDue() : null,

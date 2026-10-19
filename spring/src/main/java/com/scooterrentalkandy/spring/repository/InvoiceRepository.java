@@ -17,7 +17,7 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID> {
     List<Invoice> findTop300ByOrderByIssuedAtDesc();
 
     @EntityGraph(attributePaths = {"booking", "booking.customer", "lines"})
-    Optional<Invoice> findWithLinesById(UUID id);
+    Optional<Invoice> findWithLinesByInvoiceId(UUID InvoiceId);
 
     Optional<Invoice> findFirstByBooking_BookingIdAndKind(UUID bookingId, Invoice.Kind kind);
 }

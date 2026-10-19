@@ -22,7 +22,7 @@ public final class GpsMapper {
     public static SpeedViolationResponse toResponse(SpeedViolation v) {
         var s = v.getScooter();
         var b = v.getBooking();
-        return new SpeedViolationResponse(v.getId(), s.getCode(), s.getModel(), s.getPlateNumber(),
+        return new SpeedViolationResponse(v.getSpeedViolationId(), s.getCode(), s.getModel(), s.getPlateNumber(),
                 b == null ? null : b.getReference(), b == null ? null : b.getUser().getFullName(),
                 v.getSpeedKmh(), v.getLatitude(), v.getLongitude(), v.getRecordedAt());
     }

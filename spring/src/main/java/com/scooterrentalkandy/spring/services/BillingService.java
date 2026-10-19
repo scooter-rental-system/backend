@@ -79,7 +79,7 @@ public class BillingService {
 
     @Transactional(readOnly = true)
     public InvoiceResponse get(UUID invoiceId, AuthUser user) {
-        Invoice inv = invoices.findWithLinesById(invoiceId).orElseThrow(() -> ApiException.notFound("Invoice"));
+        Invoice inv = invoices.findWithLinesByInvoiceId(invoiceId).orElseThrow(() -> ApiException.notFound("Invoice"));
         if (!user.isAdmin() && !inv.getBooking().getUser().getUserId().equals(user.id())) {
             throw ApiException.forbidden();
         }

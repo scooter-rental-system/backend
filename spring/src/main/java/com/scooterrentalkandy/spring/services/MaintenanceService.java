@@ -92,7 +92,7 @@ public class MaintenanceService {
         if (BigDecimal.valueOf(odo).compareTo(s.getTotalMileage()) > 0) {
             s.setTotalMileage(BigDecimal.valueOf(odo).setScale(2));
         }
-        releaseScooterIfIdle(s, m.getId());
+        releaseScooterIfIdle(s, m.getMaintenanceRecordId());
         return MaintenanceMapper.toResponse(m);
     }
 
@@ -103,7 +103,7 @@ public class MaintenanceService {
             throw ApiException.conflict("Completed work cannot be cancelled");
         }
         m.setStatus(Status.CANCELLED);
-        releaseScooterIfIdle(m.getScooter(), m.getId());
+        releaseScooterIfIdle(m.getScooter(), m.getMaintenanceRecordId());
         return MaintenanceMapper.toResponse(m);
     }
 
@@ -148,7 +148,7 @@ public class MaintenanceService {
 
     private void releaseScooterIfIdle(Scooter s, UUID closedRecordId) {
         boolean otherWork = records.findByScooter_ScooterIdOrderByCreatedAtDesc(s.getScooterId()).stream()
-                .anyMatch(r -> !r.getId().equals(closedRecordId) && r.getStatus() == Status.IN_PROGRESS);
+                .anyMatch(r -> !r.getMaintenanceRecordId().equals(closedRecordId) && r.getStatus() == Status.IN_PROGRESS);
         if (!otherWork && s.getStatus() == ScooterStatus.MAINTENANCE) {
             s.setStatus(ScooterStatus.AVAILABLE);
         }

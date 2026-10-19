@@ -23,6 +23,7 @@ public class GearItem {
 
   @Id
   @GeneratedValue(strategy = GenerationType.UUID)
+  @Column(name = "gear_item_id", nullable = false, updatable = false)
   private UUID gearItemId;
 
   @Column(nullable = false)

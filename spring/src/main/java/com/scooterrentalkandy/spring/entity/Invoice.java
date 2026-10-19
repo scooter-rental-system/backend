@@ -50,7 +50,8 @@ public class Invoice {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
+    @Column(name = "invoice_id", nullable = false, updatable = false)
+    private UUID invoiceId;
 
     @Column(name = "invoice_number", nullable = false, unique = true)
     private String invoiceNumber;
