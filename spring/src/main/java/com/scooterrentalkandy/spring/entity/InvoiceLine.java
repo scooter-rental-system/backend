@@ -23,7 +23,8 @@ public class InvoiceLine {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
+    @Column(name = "invoice_line_id", nullable = false, updatable = false)
+    private UUID invoiceLineId;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "invoice_id")

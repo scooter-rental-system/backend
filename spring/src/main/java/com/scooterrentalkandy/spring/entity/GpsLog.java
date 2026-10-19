@@ -25,8 +25,8 @@ public class GpsLog {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    @Column(name = "log_id", nullable = false, updatable = false)
-    private UUID logId;
+    @Column(name = "gps_log_id", nullable = false, updatable = false)
+    private UUID gpsLogId;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "scooter_id")

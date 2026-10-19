@@ -40,7 +40,7 @@ public final class BookingMapper {
     }
 
     public static ContractResponse toResponse(Contract c) {
-        return new ContractResponse(c.getId(), c.getContractNumber(), c.getTermsVersion(), c.getTermsText(),
+        return new ContractResponse(c.getContractId(), c.getContractNumber(), c.getTermsVersion(), c.getTermsText(),
                 c.isSigned(), c.getSignedName(), c.getSignedAt());
     }
 }

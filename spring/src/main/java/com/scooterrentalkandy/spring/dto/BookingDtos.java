@@ -70,7 +70,7 @@ public final class BookingDtos {
             BigDecimal balanceDue,
             String cardLast4,
             String failureReason,
-            Instant paidAt) {
+            LocalDateTime paidAt) {
     }
 
     /**

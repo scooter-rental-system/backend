@@ -24,7 +24,8 @@ public class GpsPing {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
+    @Column(name = "gps_ping_id", nullable = false, updatable = false)
+    private UUID gpsPingId;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "scooter_id")

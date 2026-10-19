@@ -24,7 +24,8 @@ public class Contract {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
+    @Column(name = "contract_id", nullable = false, updatable = false)
+    private UUID contractId;
 
     @OneToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "booking_id")

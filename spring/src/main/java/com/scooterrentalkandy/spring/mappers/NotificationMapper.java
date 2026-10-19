@@ -11,12 +11,12 @@ public final class NotificationMapper {
     }
 
     public static NotificationResponse toResponse(Notification n) {
-        return new NotificationResponse(n.getId(), n.getSubject(), n.getMessage(), n.getReadAt() != null,
+        return new NotificationResponse(n.getNotificationId(), n.getSubject(), n.getMessage(), n.getReadAt() != null,
                 n.getCreatedAt());
     }
 
     public static NotificationLogResponse toLogResponse(Notification n) {
-        return new NotificationLogResponse(n.getId(), n.getUser().getEmail(), n.getChannel(), n.getSubject(),
+        return new NotificationLogResponse(n.getNotificationId(), n.getUser().getEmail(), n.getChannel(), n.getSubject(),
                 n.getStatus(), n.getCreatedAt());
     }
 }
