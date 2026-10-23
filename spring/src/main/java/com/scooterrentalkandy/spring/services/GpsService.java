@@ -3,6 +3,7 @@ package com.scooterrentalkandy.spring.services;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -35,6 +36,14 @@ public class GpsService {
     public static final double BASE_LNG = 80.6413;
     /** SDS 4.3: detectSpeedViolation(speed, 60 km/h). */
     public static final BigDecimal SPEED_LIMIT_KMH = new BigDecimal("60");
+    /** The largest speed the GPS log column holds (SDS 2.2: DECIMAL(5,2)). */
+    static final BigDecimal MAX_SPEED_KMH = new BigDecimal("999.99");
+    /** Devices report every 30 s (SDS 2.3); a position older than this is shown as stale, never moved on. */
+    public static final Duration STALE_AFTER = Duration.ofMinutes(2);
+    /** How far ahead of the server a device clock may be. */
+    static final Duration DEVICE_CLOCK_TOLERANCE = Duration.ofMinutes(2);
+    /** Minimum spacing of the rider's browser reports for one rental. */
+    static final Duration MIN_RIDER_REPORT_INTERVAL = Duration.ofSeconds(5);
 
     private final GpsPingRepository pings;
     private final SpeedViolationRepository violations;
@@ -101,17 +110,61 @@ public class GpsService {
         }
     }
 
-    /** Convenience for simulated trackers. */
-    @Transactional
-    public void record(Scooter scooter, double lat, double lng, double speed, LocalDateTime at) {
-        record(scooter, lat, lng, BigDecimal.valueOf(speed), at, null);
-    }
-
+    /**
+     * A report from the scooter's tracker (SDS 4.3). The device's own time is kept, so readings it buffered while
+     * offline land in the right place; a time more than {@link #DEVICE_CLOCK_TOLERANCE} ahead is refused.
+     */
     @Transactional
     public void recordFromDevice(GpsDtos.PingRequest req) {
+        if (req.recordedAt() != null && req.recordedAt().isAfter(LocalDateTime.now(clock).plus(DEVICE_CLOCK_TOLERANCE))) {
+            throw ApiException.badRequest("recordedAt is in the future");
+        }
         Scooter scooter = scooters.findByCodeIgnoreCase(req.scooterCode().trim())
                 .orElseThrow(() -> ApiException.notFound("Scooter"));
         record(scooter, req.latitude(), req.longitude(), req.speedKmh(), req.recordedAt(), req.bookingId());
+    }
+
+    /**
+     * A location the rider's browser/device reports during their own rental. The rider comes from the token and
+     * the scooter from the booking; the time is the server's. Without a speed from the device, it is derived
+     * from the previous stored report (0 for the first). Reports closer than {@link #MIN_RIDER_REPORT_INTERVAL}
+     * to the previous one are ignored; device reports are not throttled, as buffered history may arrive in bursts.
+     *
+     * @return whether the report was recorded
+     */
+    @Transactional
+    public boolean recordFromRider(UUID bookingId, AuthUser user, GpsDtos.LocationRequest req) {
+        Booking b = bookings.findWithDetailsByBookingId(bookingId).orElseThrow(() -> ApiException.notFound("Booking"));
+        if (!b.getUser().getUserId().equals(user.id())) {
+            throw ApiException.notFound("Booking");
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        Booking underWay = rentalUnderWay(b.getScooter(), now);
+        if (underWay == null || !underWay.getBookingId().equals(b.getBookingId())) {
+            throw ApiException.conflict("Location can be reported only while the rental is under way");
+        }
+        GpsPing previous = pings.findFirstByBooking_BookingIdOrderByRecordedAtDesc(bookingId).orElse(null);
+        if (previous != null && previous.getRecordedAt().isAfter(now.minus(MIN_RIDER_REPORT_INTERVAL))) {
+            return false;
+        }
+        BigDecimal speed = req.speedKmh() != null ? req.speedKmh()
+                : derivedSpeedKmh(previous, req.latitude(), req.longitude(), now);
+        record(b.getScooter(), req.latitude(), req.longitude(), speed, now, b.getBookingId());
+        return true;
+    }
+
+    /** Distance from the previous real report over the time since; never extrapolated, capped at the column. */
+    private static BigDecimal derivedSpeedKmh(GpsPing previous, double lat, double lng, LocalDateTime now) {
+        if (previous == null) {
+            return BigDecimal.ZERO;
+        }
+        long millis = Duration.between(previous.getRecordedAt(), now).toMillis();
+        if (millis <= 0) {
+            return BigDecimal.ZERO;
+        }
+        double km = distanceKm(previous.getLatitude().doubleValue(), previous.getLongitude().doubleValue(), lat, lng);
+        BigDecimal kmh = BigDecimal.valueOf(km / (millis / 3_600_000.0));
+        return kmh.min(MAX_SPEED_KMH);
     }
 
     @Transactional(readOnly = true)
@@ -200,7 +253,8 @@ public class GpsService {
         v.setRecordedAt(at);
         v.setCreatedAt(LocalDateTime.now(clock));
         violations.save(v);
-        notifications.alertAdmins("Speed violation: " + s.getCode(),
+        // In-app only: SMS alerts (SDS: SNS) wait for a real SMS provider rather than a pretend delivery.
+        notifications.notifyAdmins("Speed violation: " + s.getCode(),
                 s.getModel() + " " + s.getPlateNumber() + " recorded " + kmh.setScale(0, RoundingMode.HALF_UP)
                         + " km/h (limit " + SPEED_LIMIT_KMH + " km/h)"
                         + (rental == null ? " while not on a rental." : " on rental " + rental.getReference() + "."));
@@ -219,7 +273,9 @@ public class GpsService {
         Booking active = bookings.findFirstByScooter_ScooterIdAndStatus(s.getScooterId(), BookingStatus.ACTIVE).orElse(null);
         double dist = s.getLatitude() == null ? 0
                 : distanceKm(BASE_LAT, BASE_LNG, s.getLatitude(), s.getLongitude());
-        return GpsMapper.toLivePosition(s, active, Math.round(dist * 10) / 10.0);
+        boolean stale = s.getLastSeenAt() == null
+                || s.getLastSeenAt().isBefore(LocalDateTime.now(clock).minus(STALE_AFTER));
+        return GpsMapper.toLivePosition(s, active, Math.round(dist * 10) / 10.0, stale);
     }
 
     /** Haversine great-circle distance. */

@@ -16,5 +16,16 @@ public final class ScooterMapper {
                 s.getLongitude(), s.getImageUrl(), s.getDescription(), s.isDeleted(),
                 !held && !s.isDeleted() && s.getStatus() == ScooterStatus.AVAILABLE);
     }
+
+    /**
+     * For the public catalogue: without the last-known position, which for a rented scooter is where a customer
+     * is. Live positions are served only by the admin GPS endpoints and the rider's own tracking.
+     */
+    public static ScooterResponse toPublicResponse(Scooter s, boolean held) {
+        return new ScooterResponse(s.getScooterId(), s.getCode(), s.getModel(), s.getPlateNumber(), s.getEngineCc(),
+                s.getStatus(), s.getHourlyRate(), s.getPerKmRate(), s.getTotalMileage(), null, null,
+                s.getImageUrl(), s.getDescription(), s.isDeleted(),
+                !held && !s.isDeleted() && s.getStatus() == ScooterStatus.AVAILABLE);
+    }
 }
 

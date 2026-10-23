@@ -22,7 +22,10 @@ public record AppProperties(Jwt jwt, Cors cors, Seed seed, Billing billing, Paym
     public record Payments(String provider, String webhookSecret) {
     }
 
-    /** {@code retentionMonths}: how long GPS logs are kept (SDS 8.3: 6 months). */
-    public record Gps(boolean simulatorEnabled, long simulatorIntervalMs, String deviceApiKey, int retentionMonths) {
+    /**
+     * {@code deviceApiKey}: the key GPS devices send as X-Device-Key, from the environment; with none configured,
+     * device reports are refused. {@code retentionMonths}: how long GPS logs are kept (SDS 8.3: 6 months).
+     */
+    public record Gps(String deviceApiKey, int retentionMonths) {
     }
 }
