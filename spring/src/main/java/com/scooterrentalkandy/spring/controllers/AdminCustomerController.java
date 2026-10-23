@@ -42,7 +42,7 @@ public class AdminCustomerController {
         if (user.getRole() != Role.USER) {
             throw ApiException.badRequest("Only customer (USER) accounts can be toggled here");
         }
-        user.setActive(value);
+        user.setIsActive(value);
         return UserResponse.from(users.save(user));
     }
 }
