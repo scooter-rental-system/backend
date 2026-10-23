@@ -6,6 +6,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -100,7 +101,7 @@ public class BookingService {
     @Transactional(readOnly = true)
     public Quote quote(QuoteRequest req) {
         Scooter scooter = scooters.findById(req.scooterId()).orElseThrow(() -> ApiException.notFound("Scooter"));
-        InitialCharge c = pricing.initialCharge(scooter, resolveGear(req.gear()));
+        InitialCharge c = pricing.initialCharge(scooter, resolveGear(req.gear(), false));
         return new Quote(scooter.getScooterId(), currency, c.hourlyRate(), c.perKmRate(), c.gear(), c.gearCost(), c.total());
     }
 
@@ -125,7 +126,7 @@ public class BookingService {
                 || bookings.existsByScooter_ScooterIdAndStatusIn(scooter.getScooterId(), BookingStatus.BLOCKING)) {
             throw ApiException.conflict("This scooter is not available right now; choose another scooter");
         }
-        List<GearSelection> gear = resolveGear(req.gear());
+        List<GearSelection> gear = resolveGear(req.gear(), true);
 
         Booking b = new Booking();
         b.setReference(References.next("BK"));
@@ -354,15 +355,25 @@ public class BookingService {
         b.setCancelledAt(now());
     }
 
-    private List<GearSelection> resolveGear(List<GearSelectionRequest> requested) {
+    /**
+     * Merges the requested lines per item and checks each against the units still available. When
+     * {@code forBooking}, every item is row-locked first, in ascending ID order (after the scooter lock taken by
+     * the caller), so two bookings can neither reserve the same last units nor deadlock; the locks are held
+     * until the booking commits. A quote only reads (its read-only transaction cannot lock).
+     */
+    private List<GearSelection> resolveGear(List<GearSelectionRequest> requested, boolean forBooking) {
         if (requested == null || requested.isEmpty()) {
             return List.of();
         }
         Map<UUID, Integer> merged = new LinkedHashMap<>();
         requested.forEach(r -> merged.merge(r.gearItemId(), r.quantity(), Integer::sum));
+        Map<UUID, GearItem> locked = new HashMap<>();
+        if (forBooking) {
+            merged.keySet().stream().sorted().forEach(id -> locked.put(id, gearService.findForBooking(id)));
+        }
         List<GearSelection> result = new ArrayList<>();
         merged.forEach((id, qty) -> {
-            GearItem item = gearService.find(id);
+            GearItem item = forBooking ? locked.get(id) : gearService.find(id);
             if (!item.isActive()) {
                 throw ApiException.badRequest(item.getName() + " is not available for rent");
             }
