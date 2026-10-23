@@ -1,12 +1,18 @@
+# Test profile. The datasource is supplied at runtime by PostgresIntegrationTest (embedded PostgreSQL 16);
+# config/application.properties holds the fail-closed placeholder. All secrets below are fake, test-only values.
 spring:
-  datasource:
-    url: jdbc:h2:mem:srk;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
-    username: sa
-    password:
-#    driver-class-name: org.h2.Driver
+  jpa:
+    show-sql: false
+  flyway:
+    baseline-on-migrate: false
+    clean-disabled: true
 
 app:
   seed:
-    enabled: true
+    enabled: false
   gps:
     simulator-enabled: false
+  jwt:
+    secret: test-only-jwt-secret-not-for-production-0123456789
+  payments:
+    webhook-secret: test-only-webhook-secret

@@ -36,6 +36,9 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-security-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-validation-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+    // Integration tests run against a temporary embedded PostgreSQL 16, never a real database.
+    testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
+    testImplementation platform('io.zonky.test.postgres:embedded-postgres-binaries-bom:16.15.0')
     testCompileOnly 'org.projectlombok:lombok'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testAnnotationProcessor 'org.projectlombok:lombok'
@@ -44,4 +47,9 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Tests must never inherit a real database configuration from the developer's or CI's environment.
+    environment.keySet().removeIf { name ->
+        name.startsWith('SPRING_DATASOURCE') || name.startsWith('SPRING_FLYWAY') || name.startsWith('PG')
+                || name == 'DATABASE_URL'
+    }
 }
