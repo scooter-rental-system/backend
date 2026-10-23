@@ -22,6 +22,7 @@ import java.util.concurrent.locks.LockSupport;
 import com.scooterrentalkandy.spring.dto.BookingDtos.BookingResponse;
 import com.scooterrentalkandy.spring.dto.BookingDtos.CreateBookingRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.GearSelectionRequest;
+import com.scooterrentalkandy.spring.dto.GearDtos.GearRequest;
 import com.scooterrentalkandy.spring.entity.GearItem;
 import com.scooterrentalkandy.spring.entity.Scooter;
 import com.scooterrentalkandy.spring.entity.User;
@@ -303,6 +304,98 @@ class GearConcurrencyTests extends PostgresIntegrationTest {
         }
         assertThat(reserved(helmet)).isEqualTo(2);
         assertThat(reserved(tent)).isEqualTo(2);
+    }
+
+    private GearRequest stock(GearItem gear, int totalQuantity) {
+        return new GearRequest(gear.getName(), gear.getCategory(), gear.getDescription(), gear.getDailyRate(),
+                totalQuantity, true);
+    }
+
+    private int storedStock(GearItem gear) {
+        return gearItems.findById(gear.getGearItemId()).orElseThrow().getTotalQuantity();
+    }
+
+    /**
+     * BE-031: an open booking holds the last unit; an admin lowering stock to 0 must wait for its lock and, after
+     * the booking commits, see the reservation and get 409.
+     */
+    @Test
+    void anAdminStockReductionWaitsForABookingAndThenSeesItsReservation() throws Exception {
+        GearItem tent = saveGear(1);
+        Callable<BookingResponse> book = booking(tent);
+        CountDownLatch booked = new CountDownLatch(1);
+        CountDownLatch releaseBooking = new CountDownLatch(1);
+
+        Future<BookingResponse> booking = executor.submit(() -> transaction.execute(status -> {
+            try {
+                BookingResponse result = book.call();
+                booked.countDown();
+                if (!releaseBooking.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("not released");
+                }
+                return result;
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }));
+        Future<?> reduce;
+        try {
+            assertThat(booked.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            reduce = executor.submit(() -> gearService.update(tent.getGearItemId(), stock(tent, 0)));
+
+            awaitSessionWaitingOnGearLock();
+            assertThat(reduce.isDone()).as("the stock update must wait for the booking's gear lock").isFalse();
+        } finally {
+            releaseBooking.countDown();
+        }
+
+        assertThat(result(booking).status()).isEqualTo(BookingStatus.PENDING);
+        assertThatThrownBy(() -> result(reduce))
+                .isInstanceOfSatisfying(ApiException.class, ex -> {
+                    assertThat(ex.getStatus()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(ex.getMessage())
+                            .isEqualTo("Stock cannot be lower than the 1 unit(s) reserved by pending or active bookings");
+                });
+        assertThat(storedStock(tent)).isEqualTo(1);
+        assertThat(reserved(tent)).isEqualTo(1);
+    }
+
+    /** BE-031, the other order: a committed stock reduction is seen by a booking that waited for the lock. */
+    @Test
+    void aBookingWaitsForAnAdminStockReductionAndThenSeesTheNewStock() throws Exception {
+        GearItem tent = saveGear(1);
+        Callable<BookingResponse> book = booking(tent);
+        CountDownLatch reduced = new CountDownLatch(1);
+        CountDownLatch releaseReduction = new CountDownLatch(1);
+
+        Future<?> reduce = executor.submit(() -> transaction.executeWithoutResult(status -> {
+            gearService.update(tent.getGearItemId(), stock(tent, 0));
+            reduced.countDown();
+            try {
+                releaseReduction.await(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        Future<BookingResponse> booking;
+        try {
+            assertThat(reduced.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            booking = executor.submit(book);
+
+            awaitSessionWaitingOnGearLock();
+            assertThat(booking.isDone()).as("the booking must wait for the stock update's gear lock").isFalse();
+        } finally {
+            releaseReduction.countDown();
+        }
+
+        result(reduce);
+        assertThatThrownBy(() -> result(booking))
+                .isInstanceOfSatisfying(ApiException.class, ex -> {
+                    assertThat(ex.getStatus()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(ex.getMessage()).isEqualTo("Only 0 x " + tent.getName() + " available right now");
+                });
+        assertThat(storedStock(tent)).isZero();
+        assertThat(reserved(tent)).isZero();
     }
 
     /**

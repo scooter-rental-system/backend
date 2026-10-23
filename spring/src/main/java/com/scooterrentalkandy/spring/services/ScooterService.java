@@ -8,9 +8,11 @@ import com.scooterrentalkandy.spring.dto.ScooterDtos.ScooterResponse;
 import com.scooterrentalkandy.spring.exception.ApiException;
 import com.scooterrentalkandy.spring.mappers.ScooterMapper;
 import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
+import com.scooterrentalkandy.spring.entity.MaintenanceRecord;
 import com.scooterrentalkandy.spring.entity.Scooter;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
+import com.scooterrentalkandy.spring.repository.MaintenanceRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,10 +22,12 @@ public class ScooterService {
 
     private final ScooterRepository scooters;
     private final BookingRepository bookings;
+    private final MaintenanceRepository maintenance;
 
-    public ScooterService(ScooterRepository scooters, BookingRepository bookings) {
+    public ScooterService(ScooterRepository scooters, BookingRepository bookings, MaintenanceRepository maintenance) {
         this.scooters = scooters;
         this.bookings = bookings;
+        this.maintenance = maintenance;
     }
 
     /** The fleet customers can browse (SDS 5.2), each flagged with whether it can be booked right now. */
@@ -69,14 +73,26 @@ public class ScooterService {
         return response(s);
     }
 
+    /**
+     * Locks the scooter, as booking creation and maintenance do, so this cannot slip past their checks: it never
+     * sends a scooter held by a booking to the workshop, nor returns one with maintenance work in progress.
+     */
     @Transactional
     public ScooterResponse setStatus(UUID id, ScooterStatus status) {
-        Scooter s = find(id);
+        Scooter s = scooters.findByIdForUpdate(id).orElseThrow(() -> ApiException.notFound("Scooter"));
         if (s.getStatus() == ScooterStatus.RENTED && status != ScooterStatus.RENTED) {
             throw ApiException.conflict("Scooter is out on a rental; it is released when the rental ends");
         }
         if (status == ScooterStatus.RENTED) {
             throw ApiException.badRequest("Scooters become RENTED only through a paid booking");
+        }
+        if (status == ScooterStatus.MAINTENANCE
+                && bookings.existsByScooter_ScooterIdAndStatusIn(id, BookingStatus.BLOCKING)) {
+            throw ApiException.conflict("Scooter has a pending or active booking; cancel it before maintenance");
+        }
+        if (status == ScooterStatus.AVAILABLE
+                && maintenance.existsByScooter_ScooterIdAndStatus(id, MaintenanceRecord.Status.IN_PROGRESS)) {
+            throw ApiException.conflict("Scooter has maintenance in progress; complete or cancel it first");
         }
         s.setStatus(status);
         return response(s);

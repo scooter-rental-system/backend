@@ -36,4 +36,8 @@ public interface MaintenanceRepository extends JpaRepository<MaintenanceRecord, 
     BigDecimal sumCostCompletedBetween(@Param("from") LocalDate from, @Param("to") LocalDate to);
 
     long countByStatusIn(Collection<MaintenanceRecord.Status> statuses);
+
+    /** The record's scooter, without loading the record: the scooter is locked before the record is read. */
+    @Query("select m.scooter.scooterId from MaintenanceRecord m where m.maintenanceRecordId = :id")
+    Optional<UUID> findScooterIdById(@Param("id") UUID id);
 }

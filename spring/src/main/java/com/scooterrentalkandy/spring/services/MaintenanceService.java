@@ -2,6 +2,7 @@ package com.scooterrentalkandy.spring.services;
 
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -13,7 +14,9 @@ import com.scooterrentalkandy.spring.mappers.MaintenanceMapper;
 import com.scooterrentalkandy.spring.entity.MaintenanceRecord.Status;
 import com.scooterrentalkandy.spring.entity.MaintenanceRecord;
 import com.scooterrentalkandy.spring.entity.Scooter;
+import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
+import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.MaintenanceRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import org.springframework.stereotype.Service;
@@ -25,15 +28,22 @@ public class MaintenanceService {
     /** Kilometres between routine services. */
     public static final int SERVICE_INTERVAL_KM = 3000;
 
+    /** A pending (being paid for) or active booking holds the scooter; the admin cancels it first if needed. */
+    static final String BOOKED = "Scooter has a pending or active booking; cancel it before starting work";
+
     private final MaintenanceRepository records;
     private final ScooterRepository scooters;
+    private final BookingRepository bookings;
     private final NotificationService notifications;
+    private final Clock clock;
 
-    public MaintenanceService(MaintenanceRepository records, ScooterRepository scooters,
-                              NotificationService notifications) {
+    public MaintenanceService(MaintenanceRepository records, ScooterRepository scooters, BookingRepository bookings,
+                              NotificationService notifications, Clock clock) {
         this.records = records;
         this.scooters = scooters;
+        this.bookings = bookings;
         this.notifications = notifications;
+        this.clock = clock;
     }
 
     @Transactional(readOnly = true)
@@ -43,41 +53,49 @@ public class MaintenanceService {
         return list.stream().map(MaintenanceMapper::toResponse).toList();
     }
 
+    /** Starting work straight away locks the scooter first, as booking creation does (see {@link #start(UUID)}). */
     @Transactional
     public MaintenanceResponse create(CreateMaintenanceRequest req) {
-        Scooter scooter = scooters.findById(req.scooterId()).orElseThrow(() -> ApiException.notFound("Scooter"));
+        Scooter scooter = (req.startNow() ? scooters.findByIdForUpdate(req.scooterId())
+                : scooters.findById(req.scooterId())).orElseThrow(() -> ApiException.notFound("Scooter"));
         MaintenanceRecord m = new MaintenanceRecord();
         m.setScooter(scooter);
         m.setType(req.type());
         m.setDescription(req.description());
-        m.setScheduledDate(req.scheduledDate() == null ? LocalDate.now() : req.scheduledDate());
+        m.setScheduledDate(req.scheduledDate() == null ? LocalDate.now(clock) : req.scheduledDate());
         m.setStatus(Status.SCHEDULED);
         records.save(m);
         if (req.startNow()) {
-            start(m);
+            start(m, scooter);
         }
         return MaintenanceMapper.toResponse(m);
     }
 
+    /**
+     * Start, complete and cancel lock the scooter row before reading the record, so they run one after the
+     * other with each other and with booking creation (which also locks the scooter first), and every check
+     * below sees committed state.
+     */
     @Transactional
     public MaintenanceResponse start(UUID id) {
+        Scooter s = lockScooterOf(id);
         MaintenanceRecord m = find(id);
         if (m.getStatus() != Status.SCHEDULED) {
             throw ApiException.conflict("Only scheduled work can be started");
         }
-        start(m);
+        start(m, s);
         return MaintenanceMapper.toResponse(m);
     }
 
     @Transactional
     public MaintenanceResponse complete(UUID id, CompleteMaintenanceRequest req) {
+        Scooter s = lockScooterOf(id);
         MaintenanceRecord m = find(id);
         if (m.getStatus() == Status.DONE || m.getStatus() == Status.CANCELLED) {
             throw ApiException.conflict("Maintenance record is already closed");
         }
-        Scooter s = m.getScooter();
         m.setStatus(Status.DONE);
-        m.setCompletedDate(LocalDate.now());
+        m.setCompletedDate(LocalDate.now(clock));
         m.setCost(req.cost());
         if (req.notes() != null && !req.notes().isBlank()) {
             m.setDescription(m.getDescription() + "\n\nCompletion notes: " + req.notes());
@@ -98,12 +116,13 @@ public class MaintenanceService {
 
     @Transactional
     public MaintenanceResponse cancel(UUID id) {
+        Scooter s = lockScooterOf(id);
         MaintenanceRecord m = find(id);
         if (m.getStatus() == Status.DONE) {
             throw ApiException.conflict("Completed work cannot be cancelled");
         }
         m.setStatus(Status.CANCELLED);
-        releaseScooterIfIdle(m.getScooter(), m.getMaintenanceRecordId());
+        releaseScooterIfIdle(s, m.getMaintenanceRecordId());
         return MaintenanceMapper.toResponse(m);
     }
 
@@ -126,7 +145,7 @@ public class MaintenanceService {
         m.setScooter(scooter);
         m.setType(MaintenanceRecord.Type.SERVICE);
         m.setStatus(Status.SCHEDULED);
-        m.setScheduledDate(LocalDate.now());
+        m.setScheduledDate(LocalDate.now(clock));
         m.setDescription("Routine " + SERVICE_INTERVAL_KM + " km service (auto-scheduled at "
                 + scooter.getTotalMileage() + " km)");
         records.save(m);
@@ -135,10 +154,13 @@ public class MaintenanceService {
                         + " km and is due for a routine service.");
     }
 
-    private void start(MaintenanceRecord m) {
-        Scooter s = m.getScooter();
+    /** Takes the (locked) scooter out of service; refused while it is rented or held by a booking. */
+    private void start(MaintenanceRecord m, Scooter s) {
         if (s.getStatus() == ScooterStatus.RENTED) {
             throw ApiException.conflict("Scooter is out on a rental; start work after it is returned");
+        }
+        if (bookings.existsByScooter_ScooterIdAndStatusIn(s.getScooterId(), BookingStatus.BLOCKING)) {
+            throw ApiException.conflict(BOOKED);
         }
         m.setStatus(Status.IN_PROGRESS);
         if (!s.isDeleted()) {
@@ -156,5 +178,11 @@ public class MaintenanceService {
 
     private MaintenanceRecord find(UUID id) {
         return records.findById(id).orElseThrow(() -> ApiException.notFound("Maintenance record"));
+    }
+
+    private Scooter lockScooterOf(UUID recordId) {
+        UUID scooterId = records.findScooterIdById(recordId)
+                .orElseThrow(() -> ApiException.notFound("Maintenance record"));
+        return scooters.findByIdForUpdate(scooterId).orElseThrow(() -> ApiException.notFound("Scooter"));
     }
 }

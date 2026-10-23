@@ -63,9 +63,18 @@ public class GearService {
         return GearMapper.toResponse(gear.save(g), null);
     }
 
+    /**
+     * Stock may not drop below the units reserved by pending and active bookings. The row is locked, as booking
+     * creation does, so no booking can reserve units between the check and the update.
+     */
     @Transactional
     public GearResponse update(UUID id, GearRequest req) {
-        GearItem g = find(id);
+        GearItem g = findForBooking(id);
+        long reserved = bookingGear.sumReservedQuantity(id, BookingStatus.BLOCKING);
+        if (req.totalQuantity() < reserved) {
+            throw ApiException.conflict("Stock cannot be lower than the " + reserved
+                    + " unit(s) reserved by pending or active bookings");
+        }
         apply(g, req);
         return GearMapper.toResponse(g, null);
     }
