@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.entity.enums.Role;
+import com.scooterrentalkandy.spring.repository.UserRepository;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -19,9 +20,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
+    private final UserRepository users;
 
-    public JwtAuthFilter(JwtService jwtService) {
+    public JwtAuthFilter(JwtService jwtService, UserRepository users) {
         this.jwtService = jwtService;
+        this.users = users;
     }
 
     @Override
@@ -40,10 +43,17 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     // Issued before user ids became UUIDs (numeric subject): treat as unauthenticated.
                     return;
                 }
-                AuthUser principal = new AuthUser(userId, claims.get("email", String.class), role);
-                var auth = new UsernamePasswordAuthenticationToken(principal, null,
-                        List.of(new SimpleGrantedAuthority("ROLE_" + role.name())));
-                SecurityContextHolder.getContext().setAuthentication(auth);
+                // The signed subject identifies the account; whether it may act, and as what, is the account's
+                // current state. Deleted or deactivated users are unauthenticated, and a changed role or email
+                // applies to tokens issued before the change.
+                users.findById(userId)
+                        .filter(u -> Boolean.TRUE.equals(u.getIsActive()))
+                        .ifPresent(user -> {
+                            AuthUser principal = new AuthUser(user.getUserId(), user.getEmail(), user.getRole());
+                            var auth = new UsernamePasswordAuthenticationToken(principal, null,
+                                    List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name())));
+                            SecurityContextHolder.getContext().setAuthentication(auth);
+                        });
             });
         }
         chain.doFilter(request, response);

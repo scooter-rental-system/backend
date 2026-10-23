@@ -17,6 +17,16 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     /** Check whether an email address is already registered. */
     boolean existsByEmail(String email);
+
+    /** Login lookup; email addresses are matched without regard to case. */
+    Optional<User> findByEmailIgnoreCase(String email);
+
+    /** Duplicate-email check at registration, without regard to case. */
+    boolean existsByEmailIgnoreCase(String email);
+
+    /** Duplicate-NIC check at registration ({@code nic_number} is unique, V11). */
+    boolean existsByNicNumber(String nicNumber);
+
     List<User> findByRoleOrderByCreatedAtDesc(Role role);
 
     List<User> findByRoleAndIsActiveTrue(Role role);
