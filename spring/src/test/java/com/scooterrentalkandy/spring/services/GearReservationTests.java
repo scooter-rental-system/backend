@@ -377,19 +377,19 @@ class GearReservationTests extends PostgresIntegrationTest {
         assertThat(reserved(tent)).isEqualTo(1);
     }
 
-    /** An admin may lower stock below what is reserved: reservations stay and availability clamps to zero. */
+    /** BE-031: stock may not be lowered below what is reserved; the reservations and the stock are kept. */
     @Test
-    void stockCanBeLoweredBelowWhatIsReserved() {
+    void stockCannotBeLoweredBelowWhatIsReserved() {
         GearItem helmets = saveGear(5);
         book(line(helmets, 4));
 
-        gearService.update(helmets.getGearItemId(), new GearRequest(helmets.getName(), helmets.getCategory(),
-                helmets.getDescription(), helmets.getDailyRate(), 2, true));
+        ApiException ex = catchThrowableOfType(ApiException.class, () -> gearService.update(helmets.getGearItemId(),
+                new GearRequest(helmets.getName(), helmets.getCategory(), helmets.getDescription(),
+                        helmets.getDailyRate(), 2, true)));
 
-        assertThat(gearItems.findById(helmets.getGearItemId()).orElseThrow().getTotalQuantity()).isEqualTo(2);
+        assertThat(ex.getStatus()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(gearItems.findById(helmets.getGearItemId()).orElseThrow().getTotalQuantity()).isEqualTo(5);
         assertThat(reserved(helmets)).isEqualTo(4);
-        assertThat(available(helmets)).isZero();
-        assertThat(rejected(saveUser(), request(saveScooter(), tomorrow(), line(helmets, 1))).getStatus())
-                .isEqualTo(HttpStatus.CONFLICT);
+        assertThat(available(helmets)).isEqualTo(1);
     }
 }

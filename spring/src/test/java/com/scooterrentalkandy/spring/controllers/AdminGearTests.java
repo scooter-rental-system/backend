@@ -10,13 +10,20 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.UUID;
 import com.jayway.jsonpath.JsonPath;
+import com.scooterrentalkandy.spring.entity.Booking;
+import com.scooterrentalkandy.spring.entity.BookingGear;
 import com.scooterrentalkandy.spring.entity.GearItem;
+import com.scooterrentalkandy.spring.entity.Scooter;
 import com.scooterrentalkandy.spring.entity.User;
+import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
 import com.scooterrentalkandy.spring.entity.enums.Category;
 import com.scooterrentalkandy.spring.entity.enums.Role;
+import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.GearItemRepository;
+import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
@@ -45,6 +52,12 @@ class AdminGearTests extends PostgresIntegrationTest {
 
     @Autowired
     private GearItemRepository gearItems;
+
+    @Autowired
+    private ScooterRepository scooters;
+
+    @Autowired
+    private BookingRepository bookings;
 
     @Autowired
     private JwtService jwt;
@@ -153,6 +166,90 @@ class AdminGearTests extends PostgresIntegrationTest {
         mvc.perform(json(as(Role.ADMIN, post("/api/admin/gear")), gear("Negative " + unique(), "-1.00", 1, true)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors.dailyRate").exists());
+    }
+
+    // ── Stock floor (BE-031) ──────────────────────────────────────────────────
+
+    /** Reserves {@code quantity} units with a PENDING booking (fixture). */
+    private void reserve(GearItem item, int quantity) {
+        String id = unique();
+        Scooter scooter = new Scooter();
+        scooter.setCode("AG-" + id);
+        scooter.setModel("Test Scooter");
+        scooter.setPlateNumber("AGP-" + id);
+        scooter.setHourlyRate(new BigDecimal("250.00"));
+        scooter.setPerKmRate(new BigDecimal("15.00"));
+        Booking b = new Booking();
+        b.setReference("BK-AG" + id);
+        b.setUser(saveUser(Role.USER));
+        b.setScooter(scooters.saveAndFlush(scooter));
+        b.setStatus(BookingStatus.PENDING);
+        b.setStartTime(LocalDateTime.now().plusDays(1));
+        b.setPickupLocation("Test pickup");
+        BookingGear line = new BookingGear();
+        line.setGearItem(item);
+        line.setQuantity(quantity);
+        b.addGear(line);
+        bookings.saveAndFlush(b);
+    }
+
+    @Test
+    void stockCanBeKeptAtOrRaisedAboveWhatIsReserved() throws Exception {
+        GearItem item = saveGear(5, true);
+        reserve(item, 4);
+        String path = "/api/admin/gear/" + item.getGearItemId();
+
+        for (int stock : new int[] {5, 4, 9}) {
+            mvc.perform(json(as(Role.ADMIN, put(path)), gear(item.getName(), "300.00", stock, true)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.totalQuantity").value(stock));
+        }
+        // Other edits with the stock at the reserved level, including deactivation, are allowed.
+        mvc.perform(json(as(Role.ADMIN, put(path)), gear("Renamed " + unique(), "350.00", 4, false)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(false));
+    }
+
+    @Test
+    void stockBelowWhatIsReservedIs409() throws Exception {
+        GearItem item = saveGear(5, true);
+        reserve(item, 4);
+
+        for (int stock : new int[] {3, 0}) {
+            mvc.perform(json(as(Role.ADMIN, put("/api/admin/gear/" + item.getGearItemId())),
+                            gear(item.getName(), "300.00", stock, true)))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.message")
+                            .value("Stock cannot be lower than the 4 unit(s) reserved by pending or active bookings"));
+        }
+        assertThat(gearItems.findById(item.getGearItemId()).orElseThrow().getTotalQuantity()).isEqualTo(5);
+    }
+
+    // ── Validation (BE-031, SDS: dailyRate > 0) ───────────────────────────────
+
+    @Test
+    void dailyRateMustBePositive() throws Exception {
+        mvc.perform(json(as(Role.ADMIN, post("/api/admin/gear")), gear("Free " + unique(), "0.00", 1, true)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.dailyRate").exists());
+        mvc.perform(json(as(Role.ADMIN, post("/api/admin/gear")), gear("Cheap " + unique(), "0.01", 1, true)))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void nameAndDescriptionLengthsFollowTheColumns() throws Exception {
+        String name120 = ("N" + unique()).repeat(11).substring(0, 120);
+        mvc.perform(json(as(Role.ADMIN, post("/api/admin/gear")), gear(name120, "300.00", 1, true)))
+                .andExpect(status().isCreated());
+        mvc.perform(json(as(Role.ADMIN, post("/api/admin/gear")), gear(name120 + "X", "300.00", 1, true)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.name").exists());
+        String longDescription = """
+                {"name": "Described %s", "category": "CAMPING", "description": "%s", "dailyRate": 300.00,
+                 "totalQuantity": 1, "active": true}""".formatted(unique(), "d".repeat(1001));
+        mvc.perform(json(as(Role.ADMIN, post("/api/admin/gear")), longDescription))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.description").exists());
     }
 
     // ── Active state ──────────────────────────────────────────────────────────
