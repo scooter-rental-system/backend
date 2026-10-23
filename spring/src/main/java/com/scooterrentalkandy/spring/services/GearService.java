@@ -47,6 +47,15 @@ public class GearService {
         return gear.findById(id).orElseThrow(() -> ApiException.notFound("Gear item"));
     }
 
+    /**
+     * The gear item, row-locked until the caller's transaction ends, so that its availability can be checked
+     * and reserved without another booking reserving the same units in between. Requires a read-write
+     * transaction.
+     */
+    public GearItem findForBooking(UUID id) {
+        return gear.findByIdForUpdate(id).orElseThrow(() -> ApiException.notFound("Gear item"));
+    }
+
     @Transactional
     public GearResponse create(GearRequest req) {
         GearItem g = new GearItem();
