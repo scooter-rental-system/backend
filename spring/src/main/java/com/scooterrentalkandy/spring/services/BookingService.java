@@ -40,6 +40,8 @@ import com.scooterrentalkandy.spring.services.PaymentEvents.InitialPaymentSuccee
 import com.scooterrentalkandy.spring.services.PricingService.FinalBill;
 import com.scooterrentalkandy.spring.services.PricingService.GearSelection;
 import com.scooterrentalkandy.spring.services.PricingService.InitialCharge;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -54,6 +56,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class BookingService {
 
     public static final int MAX_ADVANCE_DAYS = 365;
+    private static final Logger log = LoggerFactory.getLogger(BookingService.class);
     private static final DateTimeFormatter WHEN = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm");
 
     private final BookingRepository bookings;
@@ -67,13 +70,15 @@ public class BookingService {
     private final GpsService gps;
     private final MaintenanceService maintenance;
     private final NotificationService notifications;
+    private final UnpaidBookingExpiry unpaidExpiry;
     private final Clock clock;
     private final String currency;
 
     public BookingService(BookingRepository bookings, ScooterRepository scooters, UserRepository users,
                           GearService gearService, PricingService pricing, ContractService contracts, PaymentService payments,
                           BillingService billing, GpsService gps, MaintenanceService maintenance,
-                          NotificationService notifications, Clock clock, AppProperties props) {
+                          NotificationService notifications, UnpaidBookingExpiry unpaidExpiry, Clock clock,
+                          AppProperties props) {
         this.bookings = bookings;
         this.scooters = scooters;
         this.users = users;
@@ -85,6 +90,7 @@ public class BookingService {
         this.gps = gps;
         this.maintenance = maintenance;
         this.notifications = notifications;
+        this.unpaidExpiry = unpaidExpiry;
         this.clock = clock;
         this.currency = props.billing().currency();
     }
@@ -299,15 +305,23 @@ public class BookingService {
         return toResponse(b);
     }
 
-    /** Releases unpaid bookings so they stop holding the scooter. */
-    @Transactional
+    /**
+     * Releases unpaid bookings so they stop holding the scooter and gear. Deliberately not transactional: each
+     * candidate is expired in its own transaction, so one failure is logged and retried on the next run without
+     * undoing the others. Returns how many were expired.
+     */
     public int expireUnpaid(LocalDateTime createdBefore) {
-        List<Booking> stale = bookings.findByStatusAndCreatedAtBefore(BookingStatus.PENDING, createdBefore);
-        stale.forEach(b -> {
-            markCancelled(b);
-            payments.cancelOpenIntent(b);
-        });
-        return stale.size();
+        int expired = 0;
+        for (UUID id : bookings.findIdsByStatusAndCreatedAtBefore(BookingStatus.PENDING, createdBefore)) {
+            try {
+                if (unpaidExpiry.expire(id, createdBefore)) {
+                    expired++;
+                }
+            } catch (RuntimeException e) {
+                log.error("Could not expire unpaid booking {}; it will be retried on the next run", id, e);
+            }
+        }
+        return expired;
     }
 
     // ---------------------------------------------------------------- queries

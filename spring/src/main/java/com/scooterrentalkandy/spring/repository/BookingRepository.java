@@ -45,7 +45,10 @@ public interface BookingRepository extends JpaRepository<Booking, UUID> {
     @EntityGraph(attributePaths = {"scooter"})
     List<Booking> findByStatusAndStartTimeLessThanEqualAndEndedAtIsNull(BookingStatus status, LocalDateTime now);
 
-    List<Booking> findByStatusAndCreatedAtBefore(BookingStatus status, LocalDateTime cutoff);
+    /** IDs only: each candidate is then locked and re-checked in its own transaction. */
+    @Query("select b.bookingId from Booking b where b.status = :status and b.createdAt < :cutoff")
+    List<UUID> findIdsByStatusAndCreatedAtBefore(@Param("status") BookingStatus status,
+                                                 @Param("cutoff") LocalDateTime cutoff);
 
     @EntityGraph(attributePaths = {"scooter", "user"})
     List<Booking> findByStatusAndStartTimeBetween(BookingStatus status, LocalDateTime from, LocalDateTime to);
