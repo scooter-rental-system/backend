@@ -10,6 +10,11 @@ spring:
 app:
   seed:
     enabled: false
+  # No scheduled job runs in the background of automated tests.
+  scheduling:
+    enabled: false
+    reminders:
+      enabled: false
   gps:
     simulator-enabled: false
   jwt:
