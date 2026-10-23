@@ -5,6 +5,8 @@ import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 import jakarta.persistence.Id;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -36,6 +38,15 @@ public class User {
 
     @Column(name = "phone", nullable = false, length = 20)
     private String phone;
+
+    /**
+     * Sri Lanka NIC number (SRS FR-001, Table 6; SDS Table 4): required and unique, matching
+     * {@code nic_number VARCHAR(20) NOT NULL UNIQUE} (V11). Its format and encryption at rest are separate tasks.
+     */
+    @NotBlank
+    @Size(max = 20)
+    @Column(name = "nic_number", nullable = false, unique = true, length = 20)
+    private String nicNumber;
 
 
     @Enumerated(EnumType.STRING)

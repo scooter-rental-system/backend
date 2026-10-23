@@ -85,11 +85,13 @@ public class DataSeeder implements ApplicationRunner {
         log.info("Seeding demo data (admin: {} / {}, customer: {} / {})", ADMIN_EMAIL, ADMIN_PASSWORD, DEMO_EMAIL,
                 DEMO_PASSWORD);
 
-        user(ADMIN_EMAIL, ADMIN_PASSWORD, "Kandy Admin", "+94 81 222 3344", Role.ADMIN, null, null, "Sri Lanka");
-        User demo = user(DEMO_EMAIL, DEMO_PASSWORD, "Alex Traveller", "+94 77 123 4567", Role.USER,
+        // Demo NICs are synthetic placeholders, not real identity numbers.
+        user(ADMIN_EMAIL, ADMIN_PASSWORD, "Kandy Admin", "+94 81 222 3344", "000000000001", Role.ADMIN, null, null,
+                "Sri Lanka");
+        User demo = user(DEMO_EMAIL, DEMO_PASSWORD, "Alex Traveller", "+94 77 123 4567", "000000000002", Role.USER,
                 "N1234567", "IDP-UK-998877", "United Kingdom");
-        User nimal = user("nimal@example.com", DEMO_PASSWORD, "Nimal Perera", "+94 71 555 0101", Role.USER,
-                "199012345678", "B1234567", "Sri Lanka");
+        User nimal = user("nimal@example.com", DEMO_PASSWORD, "Nimal Perera", "+94 71 555 0101", "000000000003",
+                Role.USER, "199012345678", "B1234567", "Sri Lanka");
 
         // Demo rates in LKR per hour and per km.
         Scooter dio = scooter("SRK-01", "Honda Dio", "CP BHA-1234", 110, "250", "15", 4200,
@@ -137,13 +139,14 @@ public class DataSeeder implements ApplicationRunner {
         maintenance.save(m);
     }
 
-    private User user(String email, String password, String name, String phone, Role role, String idDoc,
+    private User user(String email, String password, String name, String phone, String nic, Role role, String idDoc,
                       String licence, String country) {
         User u = new User();
         u.setEmail(email);
         u.setPasswordHash(encoder.encode(password));
         u.setFullName(name);
         u.setPhone(phone);
+        u.setNicNumber(nic);
         u.setRole(role);
         u.setIdDocumentNumber(idDoc);
         u.setDrivingLicenseNo(licence);
