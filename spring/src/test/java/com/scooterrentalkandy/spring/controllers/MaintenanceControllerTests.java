@@ -4,19 +4,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.UUID;
 import com.jayway.jsonpath.JsonPath;
+import com.scooterrentalkandy.spring.entity.Booking;
 import com.scooterrentalkandy.spring.entity.MaintenanceRecord;
 import com.scooterrentalkandy.spring.entity.Scooter;
 import com.scooterrentalkandy.spring.entity.User;
+import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
 import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
+import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.MaintenanceRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
@@ -362,6 +367,119 @@ class MaintenanceControllerTests extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
 
         assertThat(scooterStatus(retired)).isEqualTo(ScooterStatus.AVAILABLE);
+    }
+
+    // ── Bookings hold the scooter (BE-031) ────────────────────────────────────
+
+    @Autowired
+    private BookingRepository bookings;
+
+    /** Fixture: a booking in the given state on the scooter (the scooter's own status is left as it is). */
+    private void book(Scooter scooter, BookingStatus status) {
+        Booking b = new Booking();
+        b.setReference("BK-MT" + unique());
+        b.setUser(saveUser(Role.USER));
+        b.setScooter(scooter);
+        b.setStatus(status);
+        b.setStartTime(LocalDateTime.now().plusDays(1));
+        b.setPickupLocation("Test pickup");
+        bookings.saveAndFlush(b);
+    }
+
+    @Test
+    void workCannotStartWhileABookingHoldsTheScooter() throws Exception {
+        for (BookingStatus holding : new BookingStatus[] {BookingStatus.PENDING, BookingStatus.ACTIVE}) {
+            Scooter scooter = availableScooter();
+            String id = createRecord(scooter, false);
+            book(scooter, holding);
+
+            mvc.perform(admin(post(MAINTENANCE + "/" + id + "/start")))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.message")
+                            .value("Scooter has a pending or active booking; cancel it before starting work"));
+            assertThat(scooterStatus(scooter)).as(holding.name()).isEqualTo(ScooterStatus.AVAILABLE);
+        }
+    }
+
+    @Test
+    void workCannotStartImmediatelyWhileABookingHoldsTheScooter() throws Exception {
+        Scooter scooter = availableScooter();
+        book(scooter, BookingStatus.PENDING);
+
+        mvc.perform(json(admin(post(MAINTENANCE)), create(scooter, true)))
+                .andExpect(status().isConflict());
+        assertThat(scooterStatus(scooter)).isEqualTo(ScooterStatus.AVAILABLE);
+    }
+
+    @Test
+    void finishedOrCancelledBookingsDoNotHoldTheScooter() throws Exception {
+        Scooter scooter = availableScooter();
+        book(scooter, BookingStatus.CANCELLED);
+        String id = createRecord(scooter, false);
+
+        mvc.perform(admin(post(MAINTENANCE + "/" + id + "/start")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+    }
+
+    // ── Admin scooter status (BE-031) ─────────────────────────────────────────
+
+    private MockHttpServletRequestBuilder setStatus(Scooter scooter, ScooterStatus value) {
+        return admin(patch("/api/admin/scooters/" + scooter.getScooterId() + "/status")
+                .param("value", value.name()));
+    }
+
+    @Test
+    void statusCannotBeSetToMaintenanceWhileABookingHoldsTheScooter() throws Exception {
+        Scooter scooter = availableScooter();
+        book(scooter, BookingStatus.PENDING);
+
+        mvc.perform(setStatus(scooter, ScooterStatus.MAINTENANCE))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message")
+                        .value("Scooter has a pending or active booking; cancel it before maintenance"));
+        assertThat(scooterStatus(scooter)).isEqualTo(ScooterStatus.AVAILABLE);
+    }
+
+    @Test
+    void statusCannotBeSetToAvailableWhileWorkIsInProgress() throws Exception {
+        Scooter scooter = availableScooter();
+        createRecord(scooter, true);
+
+        mvc.perform(setStatus(scooter, ScooterStatus.AVAILABLE))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message")
+                        .value("Scooter has maintenance in progress; complete or cancel it first"));
+        assertThat(scooterStatus(scooter)).isEqualTo(ScooterStatus.MAINTENANCE);
+    }
+
+    @Test
+    void validStatusChangesStillWork() throws Exception {
+        Scooter scooter = availableScooter();
+
+        mvc.perform(setStatus(scooter, ScooterStatus.MAINTENANCE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("MAINTENANCE"));
+        mvc.perform(setStatus(scooter, ScooterStatus.AVAILABLE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AVAILABLE"));
+        // Once the work is closed the scooter can be returned by hand too.
+        String id = createRecord(scooter, true);
+        mvc.perform(json(admin(post(MAINTENANCE + "/" + id + "/complete")), complete("10.00", null, null)))
+                .andExpect(status().isOk());
+        mvc.perform(setStatus(scooter, ScooterStatus.MAINTENANCE)).andExpect(status().isOk());
+        mvc.perform(setStatus(scooter, ScooterStatus.AVAILABLE)).andExpect(status().isOk());
+    }
+
+    @Test
+    void rentedRulesOfTheStatusEndpointAreUnchanged() throws Exception {
+        Scooter rented = saveScooter(ScooterStatus.RENTED, "100.00");
+
+        mvc.perform(setStatus(rented, ScooterStatus.AVAILABLE)).andExpect(status().isConflict());
+        mvc.perform(setStatus(availableScooter(), ScooterStatus.RENTED)).andExpect(status().isBadRequest());
+        mvc.perform(as(Role.USER, patch("/api/admin/scooters/" + rented.getScooterId() + "/status")
+                        .param("value", "AVAILABLE")))
+                .andExpect(status().isForbidden());
     }
 
     // ── Access ────────────────────────────────────────────────────────────────
