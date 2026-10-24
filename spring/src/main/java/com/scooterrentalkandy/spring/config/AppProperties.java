@@ -40,12 +40,14 @@ public record AppProperties(Jwt jwt, Cors cors, Seed seed, Billing billing, Paym
 
     /**
      * External notification channels; in-app notifications need no configuration. {@code email.provider}: from
-     * NOTIFICATIONS_EMAIL_PROVIDER. Empty means email is off: nothing is sent and nothing is recorded as sent.
-     * There is no SMS provider.
+     * NOTIFICATIONS_EMAIL_PROVIDER; "ses" (Amazon SES) is the only one. Empty means email is off: nothing is sent and
+     * nothing is recorded as sent. {@code email.from}: the verified sender address (NOTIFICATIONS_EMAIL_FROM);
+     * {@code email.region}: the SES region (AWS_REGION). AWS credentials are never configured here: the AWS SDK
+     * resolves them from its default credential chain. There is no SMS provider.
      */
     public record Notifications(Email email) {
 
-        public record Email(String provider) {
+        public record Email(String provider, String from, String region) {
         }
     }
 }
