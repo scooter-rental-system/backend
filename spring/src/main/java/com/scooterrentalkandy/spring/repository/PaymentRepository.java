@@ -26,7 +26,7 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     @Query("select p from Payment p where p.booking.bookingId = :bookingId")
     Optional<Payment> findByBookingIdForUpdate(@Param("bookingId") UUID bookingId);
 
-    @EntityGraph(attributePaths = {"booking", "booking.customer"})
+    @EntityGraph(attributePaths = {"booking", "booking.user"})
     List<Payment> findTop300ByOrderByCreatedAtDesc();
 
     @EntityGraph(attributePaths = {"booking", "booking.scooter"})

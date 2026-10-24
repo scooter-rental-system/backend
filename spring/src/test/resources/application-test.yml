@@ -22,4 +22,6 @@ app:
   jwt:
     secret: test-only-jwt-secret-not-for-production-0123456789
   payments:
+    # Not "mock": the application's mock provider stays off; tests use the test-only TestPaymentGateway.
+    provider: test-gateway
     webhook-secret: test-only-webhook-secret

@@ -1,12 +1,6 @@
 package com.scooterrentalkandy.spring.services;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -35,26 +29,27 @@ import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.TestPaymentGateway;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 /**
  * Unpaid-booking expiry against the embedded PostgreSQL. Each booking is expired in its own transaction, which
  * cannot see a test transaction's uncommitted rows, so this class commits its fixtures and deletes everything it
  * created after each test. Cutoffs are explicit; nothing waits for the 30-minute hold and no scheduler runs.
  *
- * <p>The payment gateway is a test-only Mockito double, so no payment provider (real or mock) is called.
+ * <p>The payment gateway is the test-only {@link TestPaymentGateway}, so no payment provider is called.
  */
 class BookingExpiryTests extends PostgresIntegrationTest {
 
     /** Candidates must have been created before this: well after the stale fixtures, well before the fresh ones. */
     private final LocalDateTime cutoff = LocalDateTime.now().minusMinutes(30).truncatedTo(ChronoUnit.SECONDS);
 
-    @MockitoBean
-    private MockPaymentGateway gateway;
+    @Autowired
+    private TestPaymentGateway gateway;
 
     @Autowired
     private BookingService bookingService;
@@ -86,6 +81,11 @@ class BookingExpiryTests extends PostgresIntegrationTest {
     private final List<UUID> createdUsers = new ArrayList<>();
     private final List<UUID> createdScooters = new ArrayList<>();
     private final List<UUID> createdGear = new ArrayList<>();
+
+    @BeforeEach
+    void resetGateway() {
+        gateway.reset();
+    }
 
     @AfterEach
     void deleteFixtures() {
@@ -219,7 +219,7 @@ class BookingExpiryTests extends PostgresIntegrationTest {
         assertThat(after.getStatus()).isEqualTo(BookingStatus.CANCELLED);
         assertThat(after.getCancelledAt()).isNotNull();
         assertThat(payments.findByBooking_BookingId(stale.getBookingId())).isEmpty();
-        verifyNoInteractions(gateway);
+        assertThat(gateway.cancelled()).isEmpty();
         assertThat(notificationsFor(stale)).isZero();
     }
 
@@ -263,7 +263,7 @@ class BookingExpiryTests extends PostgresIntegrationTest {
         assertThat(reload(cancelled).getStatus()).isEqualTo(BookingStatus.CANCELLED);
         assertThat(reload(cancelled).getCancelledAt()).isNull();
         assertThat(reload(completed).getStatus()).isEqualTo(BookingStatus.COMPLETED);
-        verifyNoInteractions(gateway);
+        assertThat(gateway.cancelled()).isEmpty();
     }
 
     @Test
@@ -273,7 +273,7 @@ class BookingExpiryTests extends PostgresIntegrationTest {
 
         assertThat(bookingService.expireUnpaid(cutoff)).isEqualTo(1);
 
-        verify(gateway, times(1)).cancelIntent(payment.getStripePaymentId());
+        assertThat(gateway.cancelled()).containsExactly(payment.getStripePaymentId());
         Payment after = payments.findById(payment.getPaymentId()).orElseThrow();
         assertThat(after.getStatus()).isEqualTo(PaymentStatus.FAILED);
         assertThat(after.getFailureReason()).isEqualTo("Booking cancelled before payment was completed");
@@ -296,7 +296,7 @@ class BookingExpiryTests extends PostgresIntegrationTest {
         assertThat(reload(stale).getCancelledAt()).isEqualTo(cancelledAt);
         assertThat(payments.findById(payment.getPaymentId()).orElseThrow().getStatus())
                 .isEqualTo(PaymentStatus.FAILED);
-        verify(gateway, times(1)).cancelIntent(anyString());
+        assertThat(gateway.cancelled()).hasSize(1);
     }
 
     // ── Race protection: state is re-checked under the row lock ───────────────
@@ -326,7 +326,7 @@ class BookingExpiryTests extends PostgresIntegrationTest {
         assertThat(after.getCancelledAt()).isNull();
         assertThat(payments.findById(payment.getPaymentId()).orElseThrow().getStatus())
                 .isEqualTo(PaymentStatus.SUCCESS);
-        verify(gateway, never()).cancelIntent(anyString());
+        assertThat(gateway.cancelled()).isEmpty();
     }
 
     @Test
@@ -362,8 +362,8 @@ class BookingExpiryTests extends PostgresIntegrationTest {
         Booking withPayment = stalePending();
         Payment failingPayment = openPayment(failing, "pi_test_fail_" + unique());
         Payment okPayment = openPayment(withPayment, "pi_test_ok_" + unique());
-        doThrow(new IllegalStateException("payment provider unavailable"))
-                .when(gateway).cancelIntent(failingPayment.getStripePaymentId());
+        gateway.failCancel(failingPayment.getStripePaymentId(),
+                new IllegalStateException("payment provider unavailable"));
 
         assertThat(bookingService.expireUnpaid(cutoff)).isEqualTo(2);
 
