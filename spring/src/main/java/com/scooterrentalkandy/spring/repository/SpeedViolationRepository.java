@@ -10,7 +10,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface SpeedViolationRepository extends JpaRepository<SpeedViolation, UUID> {
 
-    @EntityGraph(attributePaths = {"scooter", "booking", "booking.customer"})
+    @EntityGraph(attributePaths = {"scooter", "booking", "booking.user"})
     List<SpeedViolation> findAllByOrderByRecordedAtDescCreatedAtDesc(Pageable page);
 
     List<SpeedViolation> findByScooter_ScooterIdOrderByRecordedAtAsc(UUID scooterId);

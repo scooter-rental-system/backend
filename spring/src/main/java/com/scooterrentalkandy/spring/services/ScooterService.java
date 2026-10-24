@@ -35,7 +35,7 @@ public class ScooterService {
     public List<ScooterResponse> listBookable() {
         Set<UUID> held = heldScooterIds();
         return scooters.findByDeletedFalseOrderByCodeAsc().stream()
-                .map(s -> ScooterMapper.toResponse(s, held.contains(s.getScooterId())))
+                .map(s -> ScooterMapper.toPublicResponse(s, held.contains(s.getScooterId())))
                 .toList();
     }
 
@@ -47,9 +47,12 @@ public class ScooterService {
                 .toList();
     }
 
+    /** Public scooter detail: no position (see {@link ScooterMapper#toPublicResponse}). */
     @Transactional(readOnly = true)
     public ScooterResponse get(UUID id) {
-        return response(find(id));
+        Scooter s = find(id);
+        return ScooterMapper.toPublicResponse(s,
+                bookings.existsByScooter_ScooterIdAndStatusIn(s.getScooterId(), BookingStatus.BLOCKING));
     }
 
     @Transactional

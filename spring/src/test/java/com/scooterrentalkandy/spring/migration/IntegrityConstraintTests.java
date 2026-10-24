@@ -122,6 +122,51 @@ class IntegrityConstraintTests extends PostgresIntegrationTest {
                 .hasMessageContaining("ck_maintenance_type");
     }
 
+    // ── V13: GPS ──────────────────────────────────────────────────────────────
+
+    private void insertPing(UUID booking, String lat, String lng) {
+        UUID scooter = jdbc().queryForObject("SELECT scooter_id FROM bookings WHERE booking_id = ?", UUID.class,
+                booking);
+        jdbc().update("INSERT INTO gps_pings (gps_ping_id, scooter_id, booking_id, latitude, longitude, speed_kmh, "
+                + "recorded_at) VALUES (?, ?, ?, CAST(? AS NUMERIC), CAST(? AS NUMERIC), 10, now())",
+                UUID.randomUUID(), scooter, booking, lat, lng);
+    }
+
+    @Test
+    void gpsCoordinatesAtTheLimitsAreAccepted() {
+        UUID booking = insertBooking();
+        insertPing(booking, "90", "180");
+        insertPing(booking, "-90", "-180");
+
+        assertThat(jdbc().queryForObject("SELECT count(*) FROM gps_pings WHERE booking_id = ?", Integer.class,
+                booking)).isEqualTo(2);
+    }
+
+    @Test
+    void anImpossibleLatitudeIsRejected() {
+        UUID booking = insertBooking();
+
+        assertThatThrownBy(() -> insertPing(booking, "90.000001", "80"))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("ck_gps_pings_latitude");
+    }
+
+    @Test
+    void anImpossibleLongitudeIsRejected() {
+        UUID booking = insertBooking();
+
+        assertThatThrownBy(() -> insertPing(booking, "7", "-180.5"))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("ck_gps_pings_longitude");
+    }
+
+    @Test
+    void theUnusedGpsLogsTableIsGone() {
+        assertThat(jdbc().queryForObject("SELECT to_regclass('public.gps_logs') IS NULL", Boolean.class)).isTrue();
+        assertThat(jdbc().queryForObject("SELECT to_regclass('public.gps_pings') IS NOT NULL", Boolean.class))
+                .isTrue();
+    }
+
     @Test
     void negativeMaintenanceCostIsRejected() {
         assertThatThrownBy(() -> insertMaintenance("REPAIR", "DONE", "-0.01"))

@@ -16,7 +16,9 @@ app:
     reminders:
       enabled: false
   gps:
-    simulator-enabled: false
+    # Test-only device key (not a real credential); production reads GPS_DEVICE_API_KEY from the environment.
+    device-api-key: test-device-key-not-a-secret
+    retention-months: 6
   jwt:
     secret: test-only-jwt-secret-not-for-production-0123456789
   payments:

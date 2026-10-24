@@ -11,6 +11,8 @@ import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.services.BookingReminderJob;
 import com.scooterrentalkandy.spring.services.BookingScheduler;
 import com.scooterrentalkandy.spring.services.BookingService;
+import com.scooterrentalkandy.spring.services.GpsRetentionJob;
+import com.scooterrentalkandy.spring.services.GpsService;
 import com.scooterrentalkandy.spring.services.NotificationService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
 import org.junit.jupiter.api.Test;
@@ -33,12 +35,17 @@ class SchedulingConfigTests extends PostgresIntegrationTest {
 
     private final NotificationService notifications = mock(NotificationService.class);
     private final BookingService bookingService = mock(BookingService.class);
+    private final GpsService gps = mock(GpsService.class);
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
-            .withUserConfiguration(SchedulingConfig.class, BookingScheduler.class, BookingReminderJob.class)
+            .withUserConfiguration(SchedulingConfig.class, BookingScheduler.class, BookingReminderJob.class,
+                    GpsRetentionJob.class)
             .withBean(BookingService.class, () -> bookingService)
             .withBean(BookingRepository.class, () -> mock(BookingRepository.class))
             .withBean(NotificationService.class, () -> notifications)
+            .withBean(GpsService.class, () -> gps)
+            .withBean(AppProperties.class, () -> new AppProperties(null, null, null, null, null,
+                    new AppProperties.Gps(null, 6)))
             .withBean(Clock.class, Clock::systemDefaultZone);
 
     private static List<String> scheduledTasks(ApplicationContext context) {
@@ -57,14 +64,16 @@ class SchedulingConfigTests extends PostgresIntegrationTest {
     }
 
     @Test
-    void enabledSchedulingRegistersOnlyTheExpiryJob() {
+    void enabledSchedulingRegistersTheExpiryAndGpsRetentionJobsOnly() {
         runner.withPropertyValues("app.scheduling.enabled=true").run(context -> {
             assertThat(context).hasSingleBean(SchedulingConfig.class);
             assertThat(context).hasSingleBean(BookingScheduler.class);
             assertThat(context).doesNotHaveBean(BookingReminderJob.class);
-            assertThat(scheduledTasks(context)).singleElement().asString().contains("expireUnpaidBookings");
+            assertThat(scheduledTasks(context)).hasSize(2)
+                    .anyMatch(task -> task.contains("expireUnpaidBookings"))
+                    .anyMatch(task -> task.contains("GpsRetentionJob.purge"));
         });
-        verifyNoInteractions(bookingService, notifications);
+        verifyNoInteractions(bookingService, notifications, gps);
     }
 
     @Test
@@ -81,12 +90,12 @@ class SchedulingConfigTests extends PostgresIntegrationTest {
         runner.withPropertyValues("app.scheduling.enabled=true", "app.scheduling.reminders.enabled=true")
                 .run(context -> {
                     assertThat(context).hasSingleBean(BookingReminderJob.class);
-                    assertThat(scheduledTasks(context)).hasSize(2)
+                    assertThat(scheduledTasks(context)).hasSize(3)
                             .anyMatch(task -> task.contains("dailyReminders"))
                             .anyMatch(task -> task.contains("expireUnpaidBookings"));
                 });
         // Registered, never run: nothing was sent.
-        verifyNoInteractions(notifications, bookingService);
+        verifyNoInteractions(notifications, bookingService, gps);
     }
 
     @Test
@@ -106,7 +115,8 @@ class SchedulingConfigTests extends PostgresIntegrationTest {
         assertThat(testContext.getBeanNamesForType(SchedulingConfig.class)).isEmpty();
         assertThat(testContext.getBeanNamesForType(BookingReminderJob.class)).isEmpty();
         assertThat(scheduledTasks(testContext)).isEmpty();
-        // The expiry bean still exists for direct calls; it is just never scheduled.
+        // The job beans still exist for direct calls; they are just never scheduled.
         assertThat(testContext.getBeanNamesForType(BookingScheduler.class)).hasSize(1);
+        assertThat(testContext.getBeanNamesForType(GpsRetentionJob.class)).hasSize(1);
     }
 }

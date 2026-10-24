@@ -28,6 +28,17 @@ public final class GpsDtos {
             UUID bookingId) {
     }
 
+    /**
+     * A location the rider's own browser/device reports during their rental. The time is the server's; the
+     * scooter is the booking's. Speed is optional (browsers often have none); accuracy is checked, not stored.
+     */
+    public record LocationRequest(
+            @NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
+            @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude,
+            @DecimalMin("0.00") @DecimalMax("999.99") BigDecimal speedKmh,
+            @DecimalMin("0") Double accuracyMeters) {
+    }
+
     public record Point(double latitude, double longitude, Double speedKmh, LocalDateTime recordedAt) {
     }
 
@@ -42,7 +53,9 @@ public final class GpsDtos {
             LocalDateTime lastSeen,
             String activeBookingReference,
             String riderName,
-            double distanceFromBaseKm) {
+            double distanceFromBaseKm,
+            /** No report in the last 2 minutes (or never): the position shown is the last real one, if any. */
+            boolean stale) {
     }
 
     /** {@code distanceKm}: along the trail (for a booking, the rental so far). */

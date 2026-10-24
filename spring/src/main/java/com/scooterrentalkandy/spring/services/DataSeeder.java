@@ -121,12 +121,8 @@ public class DataSeeder implements ApplicationRunner {
         completedRental(nimal, dio, today.minusDays(20).atTime(9, 30), 54, "142.60", List.of());
         completedRental(demo, ntorq, today.minusDays(12).atTime(10, 0), 101, "318.25",
                 List.of(new GearSelection(tent, 1), new GearSelection(bag, 2)));
-        // A rental under way, so the GPS map and live tracking have a moving scooter.
-        Booking riding = paidRental(demo, ray, today.minusDays(1).atTime(9, 15), List.of(new GearSelection(helmet, 1)));
-        double[][] path = {{7.2936, 80.6413}, {7.2961, 80.6370}, {7.2990, 80.6332}, {7.3025, 80.6301}};
-        for (int i = 0; i < path.length; i++) {
-            gps.record(ray, path[i][0], path[i][1], 25.0, riding.getStartTime().plusMinutes(10L * (i + 1)));
-        }
+        // A rental under way. Its scooter has no position until a real device or the rider reports one.
+        paidRental(demo, ray, today.minusDays(1).atTime(9, 15), List.of(new GearSelection(helmet, 1)));
         // A paid rental that starts in three days (can still be cancelled for a full refund).
         paidRental(nimal, vespa, today.plusDays(3).atTime(9, 0), List.of());
 
@@ -165,8 +161,6 @@ public class DataSeeder implements ApplicationRunner {
         s.setPerKmRate(new BigDecimal(perKm));
         s.setTotalMileage(BigDecimal.valueOf(odo).setScale(2));
         s.setStatus(ScooterStatus.AVAILABLE);
-        s.setLatitude(GpsService.BASE_LAT);
-        s.setLongitude(GpsService.BASE_LNG);
         s.setDescription(description);
         return scooters.save(s);
     }
