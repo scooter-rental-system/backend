@@ -3,16 +3,19 @@ package com.scooterrentalkandy.spring.services;
 
 import java.math.BigDecimal;
 import java.time.Clock;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.config.AppProperties;
 import com.scooterrentalkandy.spring.dto.PaymentDtos.PaymentConfigResponse;
 import com.scooterrentalkandy.spring.dto.PaymentDtos.PaymentIntentResponse;
 import com.scooterrentalkandy.spring.dto.PaymentDtos.PaymentResponse;
+import com.scooterrentalkandy.spring.entity.PaymentProviderEvent;
+import com.scooterrentalkandy.spring.entity.User;
 import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import com.scooterrentalkandy.spring.exception.ApiException;
@@ -22,13 +25,18 @@ import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
 import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.PaymentTransaction;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
+import com.scooterrentalkandy.spring.repository.PaymentProviderEventRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
 import com.scooterrentalkandy.spring.security.AuthUser;
 import com.scooterrentalkandy.spring.services.PaymentEvents.BalancePaid;
 import com.scooterrentalkandy.spring.services.PaymentEvents.InitialPaymentSucceeded;
+import com.scooterrentalkandy.spring.services.PaymentGateway.ChargeResult;
+import com.scooterrentalkandy.spring.services.PaymentGateway.Event;
+import com.scooterrentalkandy.spring.services.PaymentGateway.Outcome;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -36,10 +44,23 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * One Payment per booking (), following the Stripe PaymentIntent flow ():
- * the initial charge (1 hour + 1 gear day) is an intent the customer confirms in the browser; the webhook
- * activates the booking. When the rental ends, the remaining balance is charged to the saved payment method
- * and added to the same row. If that fails, the balance stays due on the row and can be paid online.
+ * One Payment per booking, following the Stripe PaymentIntent flow (SDS 4.2, 4.3): the initial charge (1 hour +
+ * 1 gear day) is an intent the customer confirms in the browser; the provider's webhook activates the booking.
+ * When the rental ends, the remaining balance is charged to the saved payment method and added to the same row.
+ * If that fails, the balance stays due on the row and can be paid online.
+ *
+ * <p>The provider is optional: without one, payment operations answer 503 and nothing is simulated.
+ *
+ * <p>Safety rules:
+ * <ul>
+ *   <li>Lock order: the booking row, then the payment row, for every change (webhooks included).</li>
+ *   <li>Provider calls with side effects carry idempotency keys derived from the booking, the attempt number or
+ *       the intent, so a retry after a rolled-back transaction gets the provider's original answer.</li>
+ *   <li>Money the provider took for an intent this booking no longer expects (replaced, closed, wrong amount) is
+ *       refunded, never ignored. Each intent is refunded at most once.</li>
+ *   <li>A refund counts as done only when the provider says it succeeded (at once or by a charge.refunded
+ *       event); until then its transaction stays PENDING.</li>
+ * </ul>
  */
 @Service
 public class PaymentService {
@@ -47,23 +68,28 @@ public class PaymentService {
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
     static final String INITIAL = "INITIAL";
     static final String BALANCE = "BALANCE";
+    private static final Set<String> HANDLED = Set.of(Event.SUCCEEDED, Event.FAILED, Event.CANCELED,
+            Event.CHARGE_REFUNDED);
 
     private final PaymentRepository payments;
     private final PaymentTransactionRepository transactions;
+    private final PaymentProviderEventRepository providerEvents;
     private final BookingRepository bookings;
-    private final PaymentGateway gateway;
+    private final ObjectProvider<PaymentGateway> gateways;
     private final PricingService pricing;
     private final ApplicationEventPublisher events;
     private final Clock clock;
     private final String currency;
 
     public PaymentService(PaymentRepository payments, PaymentTransactionRepository transactions,
-                          BookingRepository bookings, PaymentGateway gateway, PricingService pricing,
+                          PaymentProviderEventRepository providerEvents, BookingRepository bookings,
+                          ObjectProvider<PaymentGateway> gateways, PricingService pricing,
                           ApplicationEventPublisher events, Clock clock, AppProperties props) {
         this.payments = payments;
         this.transactions = transactions;
+        this.providerEvents = providerEvents;
         this.bookings = bookings;
-        this.gateway = gateway;
+        this.gateways = gateways;
         this.pricing = pricing;
         this.events = events;
         this.clock = clock;
@@ -71,8 +97,22 @@ public class PaymentService {
     }
 
     public PaymentConfigResponse config() {
-        return new PaymentConfigResponse(gateway.name(), null, currency);
+        PaymentGateway gateway = gateways.getIfAvailable();
+        return gateway == null ? new PaymentConfigResponse(false, null, null, currency)
+                : new PaymentConfigResponse(true, gateway.name(), gateway.publishableKey(), currency);
     }
+
+    /** The configured provider; 503 if there is none. Never a stand-in. */
+    private PaymentGateway gateway() {
+        PaymentGateway gateway = gateways.getIfAvailable();
+        if (gateway == null) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Card payments are not available: no payment provider is configured");
+        }
+        return gateway;
+    }
+
+    // ---------------------------------------------------------------- payment intents
 
     /** SDS 4.2 steps 7-10: create the payment intent for the initial charge and hand its client secret back. */
     @Transactional
@@ -85,9 +125,10 @@ public class PaymentService {
         if (!b.isContractSigned()) {
             throw ApiException.badRequest("Please sign the rental agreement before paying");
         }
+        PaymentGateway gateway = gateway();
         BigDecimal amount = pricing.initialCharge(b.getScooter(), PricingService.selectionsOf(b)).total();
 
-        Payment p = payments.findByBooking_BookingId(bookingId).orElse(null);
+        Payment p = payments.findByBookingIdForUpdate(bookingId).orElse(null);
         if (p == null) {
             p = new Payment();
             p.setBooking(b);
@@ -96,19 +137,20 @@ public class PaymentService {
         } else if (p.getStatus() == PaymentStatus.SUCCESS || p.getStatus() == PaymentStatus.REFUNDED) {
             throw ApiException.conflict("This booking has already been paid");
         } else if (p.getStripePaymentId() != null) {
-            gateway.cancelIntent(p.getStripePaymentId());
-            settle(p, p.getStripePaymentId(), PaymentTransaction.Status.FAILED, "Replaced by a new payment attempt");
+            replace(gateway, p, p.getStripePaymentId());
         }
-        PaymentGateway.Intent intent = gateway.createIntent(amount, currency,
-                "Scooter Rent Kandy booking " + b.getReference(), metadata(b, INITIAL));
+        int attempt = attempts(p, PaymentTransaction.Kind.INITIAL) + 1;
+        PaymentGateway.Intent intent = gateway.createIntent(amount, currency, customer(gateway, b.getUser()),
+                "Scooter Rent Kandy booking " + b.getReference(), metadata(b, INITIAL),
+                "booking-" + b.getBookingId() + "-initial-intent-" + attempt);
         p.setAmount(amount);
         p.setStatus(PaymentStatus.PENDING);
         p.setStripePaymentId(intent.id());
         p.setFailureReason(null);
         payments.save(p);
         record(p, PaymentTransaction.Kind.INITIAL, intent.id(), amount, PaymentTransaction.Status.PENDING, null);
-        return new PaymentIntentResponse(p.getPaymentId(), b.getBookingId(), INITIAL, intent.id(), intent.clientSecret(), amount,
-                currency, gateway.name());
+        return new PaymentIntentResponse(p.getPaymentId(), b.getBookingId(), INITIAL, intent.id(), intent.clientSecret(),
+                amount, currency, gateway.name());
     }
 
     /** Pay a remaining balance online, after the off-session charge at completion failed. */
@@ -116,16 +158,26 @@ public class PaymentService {
     public PaymentIntentResponse createBalanceIntent(UUID bookingId, AuthUser user) {
         Booking b = bookings.findByIdForUpdate(bookingId).orElseThrow(() -> ApiException.notFound("Booking"));
         requireOwner(b, user);
-        Payment p = payments.findByBooking_BookingId(bookingId).orElse(null);
+        Payment p = payments.findByBookingIdForUpdate(bookingId).orElse(null);
         if (b.getStatus() != BookingStatus.ACTIVE || p == null || p.getBalanceDue() == null) {
             throw ApiException.conflict("This booking has no balance due");
         }
-        if (p.getBalanceIntentId() != null) {
-            gateway.cancelIntent(p.getBalanceIntentId());
-            settle(p, p.getBalanceIntentId(), PaymentTransaction.Status.FAILED, "Replaced by a new payment attempt");
+        PaymentGateway gateway = gateway();
+        boolean chargeProcessing = transactions.findByPayment_PaymentIdAndStatus(p.getPaymentId(),
+                        PaymentTransaction.Status.PENDING).stream()
+                .anyMatch(t -> t.getKind() == PaymentTransaction.Kind.BALANCE
+                        && !Objects.equals(t.getProviderRef(), p.getBalanceIntentId()));
+        if (chargeProcessing) {
+            throw ApiException.conflict("The charge to your saved card is still being processed; "
+                    + "please wait a moment and refresh");
         }
+        if (p.getBalanceIntentId() != null) {
+            replace(gateway, p, p.getBalanceIntentId());
+        }
+        int attempt = attempts(p, PaymentTransaction.Kind.BALANCE) + 1;
         PaymentGateway.Intent intent = gateway.createIntent(p.getBalanceDue(), currency,
-                "Scooter Rent Kandy balance " + b.getReference(), metadata(b, BALANCE));
+                customer(gateway, b.getUser()), "Scooter Rent Kandy balance " + b.getReference(),
+                metadata(b, BALANCE), "booking-" + b.getBookingId() + "-balance-intent-" + attempt);
         p.setBalanceIntentId(intent.id());
         record(p, PaymentTransaction.Kind.BALANCE, intent.id(), p.getBalanceDue(), PaymentTransaction.Status.PENDING,
                 null);
@@ -133,85 +185,231 @@ public class PaymentService {
                 p.getBalanceDue(), currency, gateway.name());
     }
 
-    /** SDS 4.2 step 12: the provider's webhook. Idempotent: repeated or stale deliveries are ignored. */
+    /**
+     * Cancels an intent that a new attempt replaces. If the provider can no longer cancel it, the customer may
+     * already have paid it, so no second intent is created.
+     */
+    private void replace(PaymentGateway gateway, Payment p, String intentId) {
+        if (!gateway.cancelIntent(intentId)) {
+            throw ApiException.conflict("Your previous payment attempt is still being processed; "
+                    + "please wait a moment and refresh");
+        }
+        settle(p, intentId, PaymentTransaction.Status.FAILED, "Replaced by a new payment attempt");
+    }
+
+    /** The user's provider customer, created once (the payment method is saved on it for the balance charge). */
+    private static String customer(PaymentGateway gateway, User user) {
+        if (user.getStripeCustomerId() == null) {
+            user.setStripeCustomerId(gateway.createCustomer(user.getUserId(), user.getEmail(), user.getFullName(),
+                    "customer-" + user.getUserId()));
+        }
+        return user.getStripeCustomerId();
+    }
+
+    // ---------------------------------------------------------------- webhook
+
+    /**
+     * SDS 4.2 step 12: the provider's webhook. The booking row is locked before the payment row, the order every
+     * booking and payment change uses, so a webhook waits for expiry, cancellation or completion instead of
+     * deadlocking with them, and then sees their committed result. Each event is processed once: its id is stored
+     * with the outcome, and a repeat delivery is skipped.
+     */
     @Transactional
     public void handleWebhook(String payload, String signature) {
-        PaymentGateway.Event e;
+        PaymentGateway gateway = gateway();
+        Event e;
         try {
             e = gateway.parseWebhook(payload, signature);
         } catch (IllegalArgumentException ex) {
             throw ApiException.badRequest("Invalid webhook: " + ex.getMessage());
         }
-        if (!PaymentGateway.Event.SUCCEEDED.equals(e.type()) && !PaymentGateway.Event.FAILED.equals(e.type())) {
+        if (!HANDLED.contains(e.type())) {
             return;
         }
-        UUID bookingId = parseId(e.metadata().get("bookingId"));
-        Payment p = bookingId == null ? null : payments.findByBookingIdForUpdate(bookingId).orElse(null);
+        UUID bookingId = bookingOf(e);
+        Payment p = null;
+        if (bookingId != null && bookings.findByIdForUpdate(bookingId).isPresent()) {
+            p = payments.findByBookingIdForUpdate(bookingId).orElse(null);
+        }
+        if (providerEvents.existsByProviderAndEventId(gateway.name(), e.id())) {
+            log.info("Webhook event {} already processed", e.id());
+            return;
+        }
         if (p == null) {
-            log.warn("Webhook for unknown booking {} ignored", e.metadata().get("bookingId"));
-            return;
-        }
-        String purpose = e.metadata().get("purpose");
-        if (INITIAL.equals(purpose) && e.intentId().equals(p.getStripePaymentId())) {
-            onInitial(p, e);
-        } else if (BALANCE.equals(purpose) && e.intentId().equals(p.getBalanceIntentId())) {
-            onBalance(p, e);
+            log.warn("Webhook {} for intent {} matches no booking payment; ignored", e.type(), e.intentId());
         } else {
-            log.info("Stale webhook for intent {} ignored", e.intentId());
+            switch (e.type()) {
+                case Event.SUCCEEDED -> onSucceeded(gateway, p, e);
+                case Event.FAILED -> onFailed(p, e);
+                case Event.CANCELED -> onCanceled(p, e);
+                default -> onRefunded(p, e);
+            }
         }
+        providerEvents.save(new PaymentProviderEvent(gateway.name(), e.id(), e.type(), LocalDateTime.now(clock)));
     }
 
-    private void onInitial(Payment p, PaymentGateway.Event e) {
-        if (p.getStatus() != PaymentStatus.PENDING && p.getStatus() != PaymentStatus.FAILED) {
-            return; // already handled
+    /** From the intent's metadata (set when we created it); else from the intent recorded on a payment. */
+    private UUID bookingOf(Event e) {
+        UUID id = parseId(e.metadata().get("bookingId"));
+        if (id == null && e.intentId() != null) {
+            id = transactions.findBookingIdsByProviderRef(e.intentId()).stream().findFirst().orElse(null);
         }
-        if (e.succeeded()) {
+        return id;
+    }
+
+    /**
+     * Accepted only for this booking's current initial intent, or its open balance (online intent or a saved-card
+     * charge still processing), with the stored amount and currency. Any other success of an intent created for
+     * this booking is money the booking does not expect, and is refunded.
+     */
+    private void onSucceeded(PaymentGateway gateway, Payment p, Event e) {
+        PaymentTransaction t = intentTransaction(p, e.intentId());
+        if (t == null) {
+            log.warn("Intent {} was not created for booking {}; ignored", e.intentId(), p.getBooking().getBookingId());
+            return;
+        }
+        if (t.getStatus() == PaymentTransaction.Status.SUCCESS) {
+            return; // already accounted for (a saved-card charge is recorded when it is made)
+        }
+        boolean currentInitial = t.getKind() == PaymentTransaction.Kind.INITIAL
+                && e.intentId().equals(p.getStripePaymentId())
+                && (p.getStatus() == PaymentStatus.PENDING || p.getStatus() == PaymentStatus.FAILED);
+        boolean openBalance = t.getKind() == PaymentTransaction.Kind.BALANCE && p.getBalanceDue() != null
+                && t.getStatus() == PaymentTransaction.Status.PENDING;
+        if (currentInitial && matches(e, t.getAmount())) {
             p.setStatus(PaymentStatus.SUCCESS);
             p.setPaidAt(LocalDateTime.now(clock));
             p.setPaymentMethodRef(e.paymentMethodRef());
             p.setCardLast4(e.cardLast4());
             p.setFailureReason(null);
-            settle(p, e.intentId(), PaymentTransaction.Status.SUCCESS, null);
+            t.setStatus(PaymentTransaction.Status.SUCCESS);
+            t.setFailureReason(null);
             events.publishEvent(new InitialPaymentSucceeded(p.getBooking().getBookingId()));
-        } else {
-            p.setStatus(PaymentStatus.FAILED);
-            p.setFailureReason(e.failureReason());
-            settle(p, e.intentId(), PaymentTransaction.Status.FAILED, e.failureReason());
-        }
-    }
-
-    private void onBalance(Payment p, PaymentGateway.Event e) {
-        if (p.getBalanceDue() == null) {
-            return; // already handled
-        }
-        if (e.succeeded()) {
-            settle(p, e.intentId(), PaymentTransaction.Status.SUCCESS, null);
+        } else if (openBalance && matches(e, p.getBalanceDue())) {
+            t.setStatus(PaymentTransaction.Status.SUCCESS);
+            t.setFailureReason(null);
+            if (p.getBalanceIntentId() != null && !p.getBalanceIntentId().equals(e.intentId())) {
+                gateway.cancelIntent(p.getBalanceIntentId());
+                settle(p, p.getBalanceIntentId(), PaymentTransaction.Status.FAILED, "Balance paid with the saved card");
+            }
             p.setAmount(p.getAmount().add(p.getBalanceDue()));
             p.setBalanceDue(null);
             p.setBalanceIntentId(null);
             p.setPaidAt(LocalDateTime.now(clock));
-            p.setPaymentMethodRef(e.paymentMethodRef());
-            p.setCardLast4(e.cardLast4());
+            if (e.paymentMethodRef() != null) {
+                p.setPaymentMethodRef(e.paymentMethodRef());
+                p.setCardLast4(e.cardLast4());
+            }
             p.setFailureReason(null);
             events.publishEvent(new BalancePaid(p.getBooking().getBookingId()));
         } else {
+            refundUnexpected(gateway, p, t, e, currentInitial || openBalance
+                    ? "The provider reported a different amount or currency"
+                    : "Paid after it was replaced or closed");
+        }
+    }
+
+    private void refundUnexpected(PaymentGateway gateway, Payment p, PaymentTransaction t, Event e, String why) {
+        log.warn("Intent {} of booking {} succeeded with {} {} but was not expected ({}); refunding", e.intentId(),
+                p.getBooking().getBookingId(), e.currency(), e.amount(), why);
+        // The provider did take the money; the refund below gives it back.
+        t.setStatus(PaymentTransaction.Status.SUCCESS);
+        t.setFailureReason(why + "; refunded");
+        if (e.intentId().equals(p.getStripePaymentId()) && p.getStatus() != PaymentStatus.SUCCESS
+                && p.getStatus() != PaymentStatus.REFUNDED) {
+            p.setStatus(PaymentStatus.FAILED);
+            p.setFailureReason(why);
+        }
+        refundOnce(gateway, p, e.intentId(), e.amount(), why + " (booking " + p.getBooking().getReference() + ")",
+                "full");
+    }
+
+    private void onFailed(Payment p, Event e) {
+        PaymentTransaction t = intentTransaction(p, e.intentId());
+        if (t == null) {
+            return;
+        }
+        if (t.getKind() == PaymentTransaction.Kind.INITIAL && e.intentId().equals(p.getStripePaymentId())
+                && (p.getStatus() == PaymentStatus.PENDING || p.getStatus() == PaymentStatus.FAILED)) {
+            p.setStatus(PaymentStatus.FAILED);
+            p.setFailureReason(e.failureReason());
+            settle(p, e.intentId(), PaymentTransaction.Status.FAILED, e.failureReason());
+        } else if (t.getKind() == PaymentTransaction.Kind.BALANCE && e.intentId().equals(p.getBalanceIntentId())) {
             p.setFailureReason(e.failureReason());
             settle(p, e.intentId(), PaymentTransaction.Status.FAILED, e.failureReason());
         }
     }
 
+    /** A cancelled intent can never be paid: an open payment on it fails, and the booking stays payable. */
+    private void onCanceled(Payment p, Event e) {
+        PaymentTransaction t = intentTransaction(p, e.intentId());
+        if (t == null || t.getStatus() != PaymentTransaction.Status.PENDING) {
+            return;
+        }
+        String reason = "The payment was cancelled";
+        t.setStatus(PaymentTransaction.Status.FAILED);
+        t.setFailureReason(reason);
+        if (t.getKind() == PaymentTransaction.Kind.INITIAL && e.intentId().equals(p.getStripePaymentId())
+                && p.getStatus() == PaymentStatus.PENDING) {
+            p.setStatus(PaymentStatus.FAILED);
+            p.setFailureReason(reason);
+        } else if (t.getKind() == PaymentTransaction.Kind.BALANCE && e.intentId().equals(p.getBalanceIntentId())) {
+            p.setBalanceIntentId(null);
+        }
+    }
+
+    /**
+     * The provider's running total refunded on an intent's charge. Our refunds on that intent are confirmed once
+     * the total covers them; anything beyond them was refunded at the provider directly and is recorded. The
+     * payment becomes REFUNDED only when its whole initial charge (and nothing else) has been refunded.
+     */
+    private void onRefunded(Payment p, Event e) {
+        PaymentTransaction t = intentTransaction(p, e.intentId());
+        if (t == null || e.amountRefunded() == null) {
+            return;
+        }
+        List<PaymentTransaction> ours = transactions.findByPayment_PaymentIdAndKindAndIntentRef(p.getPaymentId(),
+                PaymentTransaction.Kind.REFUND, e.intentId()).stream()
+                .filter(r -> r.getStatus() != PaymentTransaction.Status.FAILED).toList();
+        BigDecimal known = ours.stream().map(PaymentTransaction::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (e.amountRefunded().compareTo(known) >= 0) {
+            ours.stream().filter(r -> r.getStatus() == PaymentTransaction.Status.PENDING)
+                    .forEach(r -> r.setStatus(PaymentTransaction.Status.SUCCESS));
+        }
+        if (e.amountRefunded().compareTo(known) > 0) {
+            record(p, PaymentTransaction.Kind.REFUND, null, e.intentId(), e.amountRefunded().subtract(known),
+                    PaymentTransaction.Status.SUCCESS, "Refunded at the payment provider");
+        }
+        if (t.getKind() == PaymentTransaction.Kind.INITIAL && e.intentId().equals(p.getStripePaymentId())
+                && p.getStatus() == PaymentStatus.SUCCESS && e.amountRefunded().compareTo(t.getAmount()) >= 0
+                && p.getAmount().compareTo(t.getAmount()) <= 0) {
+            p.setStatus(PaymentStatus.REFUNDED);
+        }
+    }
+
+    /** The provider's amount and currency are the ones stored when the intent was created. */
+    private boolean matches(Event e, BigDecimal expected) {
+        return e.amount() != null && e.amount().compareTo(expected) == 0 && currency.equalsIgnoreCase(e.currency());
+    }
+
+    // ---------------------------------------------------------------- end of rental and refunds
+
     /**
      * SDS 4.3 step 11 chargeRemainingBalance: charges {@code remaining} to the saved payment method and adds it
-     * to the booking's payment. On failure the balance is recorded as due on the same row. Returns success.
+     * to the booking's payment. On failure the balance is recorded as due on the same row. Returns success. The
+     * idempotency key counts recorded attempts: a declined attempt is recorded, so the next try is a new charge;
+     * a rolled-back attempt is not, so its retry repeats the same key and cannot charge twice.
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public boolean chargeRemainingBalance(Booking b, BigDecimal remaining) {
+        PaymentGateway gateway = gateway();
         Payment p = paid(b);
-        PaymentGateway.ChargeResult r = gateway.chargeSaved(p.getPaymentMethodRef(), remaining, currency,
-                "Scooter Rent Kandy balance " + b.getReference(), "balance-" + b.getBookingId() + "-" + UUID.randomUUID());
-        record(p, PaymentTransaction.Kind.BALANCE, r.reference(), remaining,
-                r.success() ? PaymentTransaction.Status.SUCCESS : PaymentTransaction.Status.FAILED, r.failureReason());
-        if (r.success()) {
+        int attempt = attempts(p, PaymentTransaction.Kind.BALANCE) + 1;
+        ChargeResult r = gateway.chargeSaved(b.getUser().getStripeCustomerId(), p.getPaymentMethodRef(), remaining,
+                currency, "Scooter Rent Kandy balance " + b.getReference(), metadata(b, BALANCE),
+                "booking-" + b.getBookingId() + "-balance-charge-" + attempt);
+        record(p, PaymentTransaction.Kind.BALANCE, r.reference(), remaining, status(r), r.failureReason());
+        if (r.succeeded()) {
             p.setAmount(p.getAmount().add(remaining));
             p.setBalanceDue(null);
             if (p.getBalanceIntentId() != null) {
@@ -224,57 +422,109 @@ public class PaymentService {
             return true;
         }
         p.setBalanceDue(remaining);
-        p.setFailureReason(r.failureReason());
+        p.setFailureReason(r.outcome() == Outcome.PENDING ? "The payment is still being processed"
+                : r.failureReason());
         return false;
     }
 
     /**
-     * Only for bookings paid under the earlier prepaid/deposit model, which can have paid more than the final
-     * cost: the difference is refunded and the payment amount becomes the final cost.
+     * Only when the final cost is below what was paid (e.g. rates were lowered during the rental): the
+     * difference is refunded once and the payment amount becomes the final cost. A refusal is recorded on the
+     * payment for the team to resolve.
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public void refundExcess(Booking b, BigDecimal excess) {
         Payment p = paid(b);
-        PaymentGateway.ChargeResult r = gateway.refund(p.getStripePaymentId(), excess,
-                "Final cost below amount paid for " + b.getReference());
-        record(p, PaymentTransaction.Kind.REFUND, r.reference(), excess,
-                r.success() ? PaymentTransaction.Status.SUCCESS : PaymentTransaction.Status.FAILED, r.failureReason());
-        if (r.success()) {
+        ChargeResult r = refundOnce(gateway(), p, p.getStripePaymentId(), excess,
+                "Final cost below amount paid for " + b.getReference(), "excess");
+        if (r != null && r.outcome() != Outcome.FAILED) {
             p.setAmount(p.getAmount().subtract(excess));
             p.setFailureReason(null);
-        } else {
-            p.setFailureReason("Refund of " + currency + " " + excess + " failed: " + r.failureReason());
         }
     }
 
-    /** Refunds the whole payment (a permitted cancellation). Returns the payment, or null if nothing was paid. */
+    /**
+     * Refunds the whole payment for a permitted cancellation. If the provider refuses, nothing changes (502) and
+     * the customer can try again. Returns the payment, or null if nothing was paid.
+     */
     @Transactional(propagation = Propagation.MANDATORY)
     public Payment refundInFull(Booking b, String reason) {
         Payment p = payments.findByBookingIdForUpdate(b.getBookingId()).orElse(null);
         if (p == null || p.getStatus() != PaymentStatus.SUCCESS) {
             return null;
         }
-        PaymentGateway.ChargeResult r = gateway.refund(p.getStripePaymentId(), p.getAmount(), reason);
-        if (!r.success()) {
+        ChargeResult r = refundOnce(gateway(), p, p.getStripePaymentId(), p.getAmount(), reason, "full");
+        if (r != null && r.outcome() == Outcome.FAILED) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "Refund failed: " + r.failureReason());
         }
-        record(p, PaymentTransaction.Kind.REFUND, r.reference(), p.getAmount(), PaymentTransaction.Status.SUCCESS, null);
-        p.setStatus(PaymentStatus.REFUNDED);
+        if (r != null && r.succeeded()) {
+            p.setStatus(PaymentStatus.REFUNDED);
+        }
         return p;
     }
 
-    /** A booking cancelled before payment: close its open intent so it can no longer be paid. */
+    /**
+     * A payment that succeeded after its booking expired or was cancelled is refunded in full. A refusal is
+     * recorded instead of thrown, so the webhook is not retried forever; returns false so the team is told.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public boolean refundLatePayment(Booking b, String reason) {
+        Payment p = payments.findByBookingIdForUpdate(b.getBookingId()).orElse(null);
+        if (p == null || p.getStatus() != PaymentStatus.SUCCESS) {
+            return true;
+        }
+        ChargeResult r = refundOnce(gateway(), p, p.getStripePaymentId(), p.getAmount(), reason, "full");
+        if (r != null && r.succeeded()) {
+            p.setStatus(PaymentStatus.REFUNDED);
+        }
+        return r == null || r.outcome() != Outcome.FAILED;
+    }
+
+    /**
+     * Refunds {@code amount} of {@code intentId} unless a refund for that intent is already pending or done, with
+     * the idempotency key refund-{intentId}-{purpose}. Records the provider's answer; returns null if skipped.
+     */
+    private ChargeResult refundOnce(PaymentGateway gateway, Payment p, String intentId, BigDecimal amount,
+                                    String reason, String purpose) {
+        boolean alreadyRefunding = transactions.findByPayment_PaymentIdAndKindAndIntentRef(p.getPaymentId(),
+                PaymentTransaction.Kind.REFUND, intentId).stream()
+                .anyMatch(r -> r.getStatus() != PaymentTransaction.Status.FAILED);
+        if (alreadyRefunding) {
+            log.info("Intent {} already has a refund; not refunding again", intentId);
+            return null;
+        }
+        ChargeResult r = gateway.refund(intentId, amount, currency, reason, "refund-" + intentId + "-" + purpose);
+        record(p, PaymentTransaction.Kind.REFUND, r.reference(), intentId, amount, status(r), r.failureReason());
+        if (r.outcome() == Outcome.FAILED) {
+            p.setFailureReason("Refund of " + currency + " " + amount + " failed: " + r.failureReason());
+        }
+        return r;
+    }
+
+    /**
+     * A booking cancelled before payment: close its open intent so it can no longer be paid. If the provider can
+     * no longer cancel it (the customer may be paying right now), a later success is refunded by the booking
+     * lifecycle. Without a configured provider the intent cannot be paid either; it is closed here only.
+     */
     @Transactional(propagation = Propagation.MANDATORY)
     public void cancelOpenIntent(Booking b) {
         payments.findByBookingIdForUpdate(b.getBookingId()).ifPresent(p -> {
             if (p.getStatus() == PaymentStatus.PENDING) {
-                gateway.cancelIntent(p.getStripePaymentId());
+                PaymentGateway gateway = gateways.getIfAvailable();
+                if (gateway == null) {
+                    log.warn("No payment provider configured; intent {} closed locally only", p.getStripePaymentId());
+                } else if (!gateway.cancelIntent(p.getStripePaymentId())) {
+                    log.warn("Intent {} could not be cancelled; a late success will be refunded",
+                            p.getStripePaymentId());
+                }
                 p.setStatus(PaymentStatus.FAILED);
                 p.setFailureReason("Booking cancelled before payment was completed");
                 settle(p, p.getStripePaymentId(), PaymentTransaction.Status.FAILED, p.getFailureReason());
             }
         });
     }
+
+    // ---------------------------------------------------------------- queries and helpers
 
     @Transactional(readOnly = true)
     public Optional<Payment> find(UUID bookingId) {
@@ -289,13 +539,43 @@ public class PaymentService {
                         .map(PaymentMapper::toResponse).toList()));
     }
 
+    @Transactional(readOnly = true)
+    public List<PaymentResponse> recent() {
+        return payments.findTop300ByOrderByCreatedAtDesc().stream().map(p -> PaymentMapper.toResponse(p, true)).toList();
+    }
+
+    /** The intent or charge transaction recorded for {@code intentId} on this payment, if we created it. */
+    private PaymentTransaction intentTransaction(Payment p, String intentId) {
+        return intentId == null ? null : transactions
+                .findFirstByPayment_PaymentIdAndProviderRefOrderByCreatedAtDesc(p.getPaymentId(), intentId)
+                .filter(t -> t.getKind() != PaymentTransaction.Kind.REFUND).orElse(null);
+    }
+
+    private int attempts(Payment p, PaymentTransaction.Kind kind) {
+        return p.getPaymentId() == null ? 0 : (int) transactions.countByPayment_PaymentIdAndKind(p.getPaymentId(), kind);
+    }
+
+    private static PaymentTransaction.Status status(ChargeResult r) {
+        return switch (r.outcome()) {
+            case SUCCEEDED -> PaymentTransaction.Status.SUCCESS;
+            case PENDING -> PaymentTransaction.Status.PENDING;
+            case FAILED -> PaymentTransaction.Status.FAILED;
+        };
+    }
+
     /** Audit trail: one row per provider call (SDS 6.2, 8.3). */
     private void record(Payment p, PaymentTransaction.Kind kind, String ref, BigDecimal amount,
+                        PaymentTransaction.Status status, String failureReason) {
+        record(p, kind, ref, null, amount, status, failureReason);
+    }
+
+    private void record(Payment p, PaymentTransaction.Kind kind, String ref, String intentRef, BigDecimal amount,
                         PaymentTransaction.Status status, String failureReason) {
         PaymentTransaction t = new PaymentTransaction();
         t.setPayment(p);
         t.setKind(kind);
         t.setProviderRef(ref);
+        t.setIntentRef(intentRef);
         t.setAmount(amount);
         t.setStatus(status);
         t.setFailureReason(failureReason);
@@ -311,11 +591,6 @@ public class PaymentService {
                 t.setFailureReason(failureReason);
             }
         });
-    }
-
-    @Transactional(readOnly = true)
-    public List<PaymentResponse> recent() {
-        return payments.findTop300ByOrderByCreatedAtDesc().stream().map(p -> PaymentMapper.toResponse(p, true)).toList();
     }
 
     private Payment paid(Booking b) {

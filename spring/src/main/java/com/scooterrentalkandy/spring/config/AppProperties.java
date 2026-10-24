@@ -19,7 +19,15 @@ public record AppProperties(Jwt jwt, Cors cors, Seed seed, Billing billing, Paym
     public record Billing(String currency) {
     }
 
-    public record Payments(String provider, String webhookSecret) {
+    /**
+     * {@code provider}: the payment provider, from PAYMENTS_PROVIDER; "stripe" is the only one. Empty means no
+     * provider: payment operations answer 503, nothing is simulated. {@code stripe}: the Stripe keys, from the
+     * environment only (STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET); never committed.
+     */
+    public record Payments(String provider, Stripe stripe) {
+
+        public record Stripe(String secretKey, String publishableKey, String webhookSecret) {
+        }
     }
 
     /**

@@ -64,6 +64,10 @@ public class User {
     @Column(name = "is_active", nullable = false)
     private Boolean isActive = true;
 
+    /** Stripe Customer used to save the payment method for the off-session balance charge. Never in a DTO. */
+    @Column(name = "stripe_customer_id", unique = true)
+    private String stripeCustomerId;
+
 
     // ── Relationships ──────────────────────────────────────────────────────────
 

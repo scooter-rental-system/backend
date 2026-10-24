@@ -45,6 +45,10 @@ public class PaymentTransaction {
     @Column(name = "provider_ref")
     private String providerRef;
 
+    /** For a refund: the payment intent it was made against. */
+    @Column(name = "intent_ref")
+    private String intentRef;
+
     @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal amount;
 

@@ -46,8 +46,6 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/gps/pings").permitAll()
                         // Payment provider webhooks are authenticated by their signature inside the handler.
                         .requestMatchers(HttpMethod.POST, "/api/webhooks/stripe").permitAll()
-                        // Local stand-in for Stripe's public API (exists only with the mock provider).
-                        .requestMatchers(HttpMethod.POST, "/mock-stripe/**").permitAll()
                         .requestMatchers("/api/admin/**").hasAnyRole("ADMIN", "SUPER_ADMIN")
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);

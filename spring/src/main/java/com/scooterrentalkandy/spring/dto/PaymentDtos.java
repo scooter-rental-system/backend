@@ -30,8 +30,11 @@ public final class PaymentDtos {
             String provider) {
     }
 
-    /** Which client-side payment library to load; {@code publishableKey} is null for the mock provider. */
-    public record PaymentConfigResponse(String provider, String publishableKey, String currency) {
+    /**
+     * Which client-side payment library to load. {@code available} is false when no provider is configured; then
+     * {@code provider} and {@code publishableKey} are null and payments cannot be made.
+     */
+    public record PaymentConfigResponse(boolean available, String provider, String publishableKey, String currency) {
     }
 
     public record PaymentResponse(
