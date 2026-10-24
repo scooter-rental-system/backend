@@ -3,6 +3,7 @@ package com.scooterrentalkandy.spring.controllers;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -13,6 +14,7 @@ import java.util.UUID;
 import com.jayway.jsonpath.JsonPath;
 import com.scooterrentalkandy.spring.entity.Booking;
 import com.scooterrentalkandy.spring.entity.GearItem;
+import com.scooterrentalkandy.spring.entity.GpsPing;
 import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.PaymentTransaction;
 import com.scooterrentalkandy.spring.entity.Scooter;
@@ -24,11 +26,13 @@ import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.GearItemRepository;
+import com.scooterrentalkandy.spring.repository.GpsPingRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
+import com.scooterrentalkandy.spring.services.PaymentGateway;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
 import com.scooterrentalkandy.spring.support.TestPaymentGateway;
 import com.scooterrentalkandy.spring.support.TestPaymentGateway.CreatedIntent;
@@ -89,6 +93,9 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
 
     @Autowired
     private EntityManager em;
+
+    @Autowired
+    private GpsPingRepository pings;
 
     @BeforeEach
     void resetGateway() {
@@ -474,7 +481,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
     // ── Webhook integrity ─────────────────────────────────────────────────────
 
     @Test
-    void aSuccessForAnotherAmountIsNotAcceptedAsPayment() throws Exception {
+    void aSuccessForAnotherAmountIsNotAcceptedAndTheMoneyIsReturned() throws Exception {
         User owner = saveUser(Role.USER);
         UUID id = signedBooking(owner, saveScooter(), null);
         CreatedIntent created = intent(owner, id);
@@ -486,7 +493,12 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         assertThat(p.getStatus()).isEqualTo(PaymentStatus.FAILED);
         assertThat(p.getFailureReason()).isEqualTo("The provider reported a different amount or currency");
         assertThat(p.getPaidAt()).isNull();
-        assertThat(transaction(p, created.id()).getStatus()).isEqualTo(PaymentTransaction.Status.FAILED);
+        // What the provider did take is refunded, once, with a key tied to that intent.
+        assertThat(gateway.refunds()).hasSize(1);
+        TestPaymentGateway.Refund refund = gateway.refunds().getFirst();
+        assertThat(refund.intentId()).isEqualTo(created.id());
+        assertThat(refund.amount()).isEqualByComparingTo("1.00");
+        assertThat(refund.idempotencyKey()).isEqualTo("refund-" + created.id() + "-full");
     }
 
     @Test
@@ -586,9 +598,292 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         assertThat(gateway.refunds()).hasSize(1);
         assertThat(gateway.refunds().getFirst().intentId()).isEqualTo(intentId);
         assertThat(gateway.refunds().getFirst().amount()).isEqualByComparingTo("750.00");
+        assertThat(gateway.refunds().getFirst().idempotencyKey()).isEqualTo("refund-" + intentId + "-full");
         assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.REFUNDED);
         assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.CANCELLED);
         assertThat(scooters.findById(scooter.getScooterId()).orElseThrow().getStatus())
                 .isEqualTo(ScooterStatus.AVAILABLE);
+    }
+
+    @Test
+    void cancellingAPaidBookingTwiceRefundsOnce() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        pay(owner, id);
+        mvc.perform(as(owner, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isOk());
+
+        mvc.perform(as(owner, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isConflict());
+
+        assertThat(gateway.refundCalls()).isEqualTo(1);
+        assertThat(refundTransactions(id)).isEqualTo(1);
+    }
+
+    /** A refund the provider has accepted but not finished stays PENDING until its charge.refunded event. */
+    @Test
+    void aPendingRefundCompletesWhenTheProviderReportsIt() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        pay(owner, id);
+        String intentId = payment(id).getStripePaymentId();
+        gateway.refundOutcome(PaymentGateway.Outcome.PENDING);
+
+        mvc.perform(as(owner, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isOk());
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.CANCELLED);
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
+        String refundId = gateway.refunds().getFirst().result().reference();
+        assertThat(transaction(payment(id), refundId).getStatus()).isEqualTo(PaymentTransaction.Status.PENDING);
+
+        BigDecimal paid = new BigDecimal("250.00");
+        deliver(gateway.refunded(intentId, paid, paid, "LKR"));
+
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        assertThat(transaction(payment(id), refundId).getStatus()).isEqualTo(PaymentTransaction.Status.SUCCESS);
+
+        // The provider sends the same total again (a new event): nothing more is recorded.
+        deliver(gateway.refunded(intentId, paid, paid, "LKR"));
+        assertThat(refundTransactions(id)).isEqualTo(1);
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+    }
+
+    @Test
+    void aRefundMadeAtTheProviderIsRecordedWithoutChangingThePaidBooking() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        pay(owner, id);
+        String intentId = payment(id).getStripePaymentId();
+
+        deliver(gateway.refunded(intentId, new BigDecimal("250.00"), new BigDecimal("100.00"), "LKR"));
+
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        em.flush();
+        assertThat(jdbc.queryForObject("SELECT amount FROM payment_transactions WHERE kind = 'REFUND' AND intent_ref = ?",
+                BigDecimal.class, intentId)).isEqualByComparingTo("100.00");
+        assertThat(gateway.refundCalls()).isZero();
+    }
+
+    // ── Replaced, late and cancelled intents ──────────────────────────────────
+
+    @Test
+    void aReplacedIntentThatStillSucceedsIsRefundedOnce() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        CreatedIntent replaced = intent(owner, id);
+        CreatedIntent current = intent(owner, id);
+
+        deliver(gateway.succeeded(replaced, "pm_test_other", "1111"));
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.PENDING);
+        assertThat(payment(id).getStripePaymentId()).isEqualTo(current.id());
+        assertThat(gateway.refunds()).hasSize(1);
+        assertThat(gateway.refunds().getFirst().intentId()).isEqualTo(replaced.id());
+        assertThat(gateway.refunds().getFirst().amount()).isEqualByComparingTo(replaced.amount());
+        assertThat(transaction(payment(id), replaced.id()).getFailureReason())
+                .isEqualTo("Paid after it was replaced or closed; refunded");
+
+        // Another delivery for the same intent (a new event id) refunds nothing more.
+        deliver(gateway.succeeded(replaced, "pm_test_other", "1111"));
+        assertThat(gateway.refundCalls()).isEqualTo(1);
+
+        // The current intent still pays the booking.
+        deliver(gateway.succeeded(current, "pm_test_saved", "4242"));
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(payment(id).getPaymentMethodRef()).isEqualTo("pm_test_saved");
+        assertThat(gateway.refundCalls()).isEqualTo(1);
+    }
+
+    @Test
+    void aPaymentThatArrivesAfterCancellationIsRefundedAndDoesNotActivate() throws Exception {
+        User owner = saveUser(Role.USER);
+        Scooter scooter = saveScooter();
+        UUID id = signedBooking(owner, scooter, null);
+        CreatedIntent created = intent(owner, id);
+        gateway.notCancelable(created.id()); // the customer is paying at that very moment
+        mvc.perform(as(owner, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isOk());
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.FAILED);
+
+        deliver(gateway.succeeded(created, "pm_test_saved", "4242"));
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.CANCELLED);
+        assertThat(scooters.findById(scooter.getScooterId()).orElseThrow().getStatus())
+                .isEqualTo(ScooterStatus.AVAILABLE);
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        assertThat(gateway.refunds()).hasSize(1);
+        assertThat(gateway.refunds().getFirst().idempotencyKey()).isEqualTo("refund-" + created.id() + "-full");
+        assertThat(gateway.refunds().getFirst().amount()).isEqualByComparingTo("250.00");
+    }
+
+    @Test
+    void aLatePaymentWhoseRefundIsRefusedIsRecordedForTheTeam() throws Exception {
+        User owner = saveUser(Role.USER);
+        User admin = saveUser(Role.ADMIN);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        CreatedIntent created = intent(owner, id);
+        gateway.notCancelable(created.id());
+        mvc.perform(as(owner, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isOk());
+        gateway.refundOutcome(PaymentGateway.Outcome.FAILED);
+        long adminNotices = notificationsFor(admin);
+
+        // Answered 200: retrying the webhook would not change the refusal.
+        deliver(gateway.succeeded(created, "pm_test_saved", "4242"));
+
+        Payment p = payment(id);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.CANCELLED);
+        assertThat(p.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
+        assertThat(p.getFailureReason()).startsWith("Refund of LKR 250.00 failed");
+        em.flush();
+        assertThat(jdbc.queryForObject("SELECT status FROM payment_transactions WHERE kind = 'REFUND' "
+                + "AND intent_ref = ?", String.class, created.id())).isEqualTo("FAILED");
+        assertThat(notificationsFor(admin)).isEqualTo(adminNotices + 1);
+    }
+
+    @Test
+    void aCancelledIntentNeverActivatesAndTheBookingStaysPayable() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        CreatedIntent created = intent(owner, id);
+
+        deliver(gateway.canceled(created));
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(payment(id).getFailureReason()).isEqualTo("The payment was cancelled");
+        assertThat(transaction(payment(id), created.id()).getStatus()).isEqualTo(PaymentTransaction.Status.FAILED);
+        CreatedIntent retry = intent(owner, id);
+        deliver(gateway.succeeded(retry, "pm_test_saved", "4242"));
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+
+        // A cancellation event for the intent that was paid changes nothing.
+        deliver(gateway.canceled(retry));
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+    }
+
+    // ── Ending the rental: GPS distance and final billing ─────────────────────
+
+    /**
+     * A paid rental that started 2.5 hours ago (3 billable hours), with two stored GPS points 0.01° of latitude
+     * apart (1.11 km): final total 3 x 250.00 + 1.11 x 15.00 = 766.65, of which 250.00 was paid up front.
+     */
+    private UUID rentalUnderWay(User owner) throws Exception {
+        Scooter scooter = saveScooter();
+        UUID id = signedBooking(owner, scooter, null);
+        pay(owner, id);
+        Booking b = booking(id);
+        LocalDateTime start = LocalDateTime.now().minusMinutes(150);
+        b.setStartTime(start);
+        for (int i = 0; i < 2; i++) {
+            GpsPing ping = new GpsPing();
+            ping.setScooter(scooter);
+            ping.setBooking(b);
+            ping.setLatitude(new BigDecimal(i == 0 ? "7.290600" : "7.300600"));
+            ping.setLongitude(new BigDecimal("80.633700"));
+            ping.setSpeedKmh(new BigDecimal("20.00"));
+            ping.setRecordedAt(start.plusMinutes(30 + 30L * i));
+            pings.save(ping);
+        }
+        em.flush();
+        return id;
+    }
+
+    @Test
+    void endingARentalChargesTheSavedCardForTheGpsBasedBalance() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = rentalUnderWay(owner);
+
+        mvc.perform(as(owner, put("/api/bookings/" + id + "/complete")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.distanceKm").value(1.11))
+                .andExpect(jsonPath("$.totalCost").value(766.65));
+
+        assertThat(gateway.charges()).hasSize(1);
+        TestPaymentGateway.Charge charge = gateway.charges().getFirst();
+        assertThat(charge.amount()).isEqualByComparingTo("516.65");
+        assertThat(charge.currency()).isEqualTo("LKR");
+        assertThat(charge.paymentMethodRef()).isEqualTo("pm_test_saved");
+        assertThat(charge.customerId()).isEqualTo(users.findById(owner.getUserId()).orElseThrow().getStripeCustomerId());
+        assertThat(charge.idempotencyKey()).isEqualTo("booking-" + id + "-balance-charge-1");
+        Payment p = payment(id);
+        assertThat(p.getAmount()).isEqualByComparingTo("766.65");
+        assertThat(p.getBalanceDue()).isNull();
+        mvc.perform(as(owner, get("/api/bookings/" + id + "/invoices")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].kind").value("FINAL"))
+                .andExpect(jsonPath("$[0].total").value(766.65))
+                .andExpect(jsonPath("$[0].lines[0].quantity").value(3))
+                .andExpect(jsonPath("$[0].lines[1].quantity").value(1.11))
+                .andExpect(jsonPath("$[0].lines[1].amount").value(16.65))
+                .andExpect(jsonPath("$[0].paymentStatus").value("SUCCESS"));
+    }
+
+    @Test
+    void aDeclinedBalanceStaysDueAndCanBePaidOnline() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = rentalUnderWay(owner);
+        gateway.declineCharges("Your card was declined.");
+
+        mvc.perform(as(owner, put("/api/bookings/" + id + "/complete")))
+                .andExpect(status().isPaymentRequired())
+                .andExpect(jsonPath("$.message").value("Rental ended, but the remaining balance of LKR 516.65 could "
+                        + "not be charged: Your card was declined.. Pay it online to finish."));
+
+        Booking ended = booking(id);
+        assertThat(ended.getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(ended.getEndedAt()).isNotNull();
+        assertThat(ended.getPendingTotalCost()).isEqualByComparingTo("766.65");
+        assertThat(payment(id).getBalanceDue()).isEqualByComparingTo("516.65");
+        LocalDateTime endedAt = ended.getEndedAt();
+
+        // Trying again charges the same frozen amount as a new attempt.
+        mvc.perform(as(owner, put("/api/bookings/" + id + "/complete"))).andExpect(status().isPaymentRequired());
+        assertThat(gateway.charges()).extracting(TestPaymentGateway.Charge::idempotencyKey)
+                .containsExactly("booking-" + id + "-balance-charge-1", "booking-" + id + "-balance-charge-2");
+        assertThat(gateway.charges()).allSatisfy(c -> assertThat(c.amount()).isEqualByComparingTo("516.65"));
+        assertThat(booking(id).getEndedAt()).isEqualTo(endedAt);
+
+        // The customer pays the balance online.
+        mvc.perform(as(owner, post("/api/bookings/" + id + "/balance-intent")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.purpose").value("BALANCE"))
+                .andExpect(jsonPath("$.amount").value(516.65));
+        CreatedIntent balance = gateway.intents().getLast();
+        assertThat(balance.idempotencyKey()).isEqualTo("booking-" + id + "-balance-intent-3");
+        deliver(gateway.succeeded(balance, "pm_test_new", "5555"));
+
+        Booking completed = booking(id);
+        assertThat(completed.getStatus()).isEqualTo(BookingStatus.COMPLETED);
+        assertThat(completed.getTotalCost()).isEqualByComparingTo("766.65");
+        assertThat(completed.getEndTime()).isEqualTo(endedAt);
+        Payment p = payment(id);
+        assertThat(p.getAmount()).isEqualByComparingTo("766.65");
+        assertThat(p.getBalanceDue()).isNull();
+    }
+
+    @Test
+    void noOnlineBalanceIntentWhileTheSavedCardChargeIsStillProcessing() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = rentalUnderWay(owner);
+        gateway.chargesProcessing();
+        mvc.perform(as(owner, put("/api/bookings/" + id + "/complete"))).andExpect(status().isPaymentRequired());
+
+        mvc.perform(as(owner, post("/api/bookings/" + id + "/balance-intent")))
+                .andExpect(status().isConflict());
+
+        // When the processing charge succeeds, the rental completes.
+        TestPaymentGateway.Charge charge = gateway.charges().getFirst();
+        deliver(gateway.succeeded(charge.result().reference(), charge.amount(), "LKR",
+                java.util.Map.of("bookingId", id.toString(), "purpose", "BALANCE"), null, null));
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.COMPLETED);
+        assertThat(payment(id).getAmount()).isEqualByComparingTo("766.65");
+        assertThat(payment(id).getPaymentMethodRef()).isEqualTo("pm_test_saved");
+    }
+
+    private long refundTransactions(UUID bookingId) {
+        em.flush();
+        return jdbc.queryForObject("SELECT count(*) FROM payment_transactions t JOIN payments p "
+                + "ON p.payment_id = t.payment_id WHERE p.booking_id = ? AND t.kind = 'REFUND'", Long.class, bookingId);
     }
 }

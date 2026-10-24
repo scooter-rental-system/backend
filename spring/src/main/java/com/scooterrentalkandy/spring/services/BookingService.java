@@ -46,8 +46,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * PENDING (booked, contract signed, initial charge being paid) → ACTIVE (paid; rental runs from startTime)
@@ -72,14 +74,15 @@ public class BookingService {
     private final MaintenanceService maintenance;
     private final NotificationService notifications;
     private final UnpaidBookingExpiry unpaidExpiry;
+    private final TransactionTemplate transaction;
     private final Clock clock;
     private final String currency;
 
     public BookingService(BookingRepository bookings, ScooterRepository scooters, UserRepository users,
                           GearService gearService, PricingService pricing, ContractService contracts, PaymentService payments,
                           BillingService billing, GpsService gps, MaintenanceService maintenance,
-                          NotificationService notifications, UnpaidBookingExpiry unpaidExpiry, Clock clock,
-                          AppProperties props) {
+                          NotificationService notifications, UnpaidBookingExpiry unpaidExpiry,
+                          PlatformTransactionManager transactionManager, Clock clock, AppProperties props) {
         this.bookings = bookings;
         this.scooters = scooters;
         this.users = users;
@@ -92,6 +95,7 @@ public class BookingService {
         this.maintenance = maintenance;
         this.notifications = notifications;
         this.unpaidExpiry = unpaidExpiry;
+        this.transaction = new TransactionTemplate(transactionManager);
         this.clock = clock;
         this.currency = props.billing().currency();
     }
@@ -174,10 +178,17 @@ public class BookingService {
         Booking b = find(event.bookingId());
         if (b.getStatus() != BookingStatus.PENDING || !b.isContractSigned()) {
             // Paid after the booking expired or was cancelled: give the money back.
-            payments.refundInFull(b, "Payment received for booking " + b.getReference() + " after it was "
-                    + b.getStatus().name().toLowerCase());
-            notifications.notify(b.getUser(), "Payment refunded: " + b.getReference(),
-                    "Your payment arrived after the booking had expired, so it has been refunded in full.");
+            boolean refunding = payments.refundLatePayment(b, "Payment received for booking " + b.getReference()
+                    + " after it was " + b.getStatus().name().toLowerCase());
+            notifications.notify(b.getUser(), "Payment refunded: " + b.getReference(), refunding
+                    ? "Your payment arrived after the booking had ended, so it is being refunded in full."
+                    : "Your payment arrived after the booking had ended. We could not refund it automatically; "
+                            + "our team will refund it in full.");
+            if (!refunding) {
+                notifications.notifyAdmins("Refund needed " + b.getReference(), "A payment for "
+                        + b.getReference() + " arrived after the booking ended and could not be refunded "
+                        + "automatically. Refund it from the payment provider's dashboard.");
+            }
             return;
         }
         b.setStatus(BookingStatus.ACTIVE);
@@ -204,14 +215,28 @@ public class BookingService {
 
     // ---------------------------------------------------------------- ending a rental (SDS 4.3, E2)
 
+    /** The outcome of collecting the balance: the completed booking, or why the balance could not be charged. */
+    private record Settlement(BookingResponse booking, String unpaidMessage) {
+    }
+
     /**
-     * The customer (or an admin on their behalf) ends the rental. The first call fixes the end time, the GPS
-     * distance and the final total, and issues the final invoice; then the remaining balance is charged. If
-     * that charge fails the booking stays ACTIVE with the balance due, and calling this again retries the same
-     * amount (nothing is recalculated).
+     * The customer (or an admin on their behalf) ends the rental, in two transactions. The first fixes the end
+     * time, the GPS distance and the final total, and issues the final invoice; it is committed before any money
+     * moves, so every later attempt charges exactly the same amount. The second charges the remaining balance (or
+     * refunds an excess) and completes the booking. If the charge is declined the booking stays ACTIVE with the
+     * balance due (402) and calling this again retries the same amount. If the provider cannot be reached, only
+     * the second transaction rolls back and a retry repeats the charge with the same idempotency key.
      */
-    @Transactional(noRollbackFor = ApiException.class)
     public BookingResponse complete(UUID bookingId, AuthUser user) {
+        transaction.executeWithoutResult(status -> freezeSettlement(bookingId, user));
+        Settlement settlement = transaction.execute(status -> collectBalance(bookingId, user));
+        if (settlement.unpaidMessage() != null) {
+            throw new ApiException(HttpStatus.PAYMENT_REQUIRED, settlement.unpaidMessage());
+        }
+        return settlement.booking();
+    }
+
+    private void freezeSettlement(UUID bookingId, AuthUser user) {
         bookings.findByIdForUpdate(bookingId).orElseThrow(() -> ApiException.notFound("Booking"));
         Booking b = findOwned(bookingId, user);
         if (b.getStatus() != BookingStatus.ACTIVE) {
@@ -233,7 +258,14 @@ public class BookingService {
             b.setPendingTotalCost(bill.total());
             billing.issueFinalInvoice(b, bill);
         }
+    }
 
+    private Settlement collectBalance(UUID bookingId, AuthUser user) {
+        bookings.findByIdForUpdate(bookingId).orElseThrow(() -> ApiException.notFound("Booking"));
+        Booking b = findOwned(bookingId, user);
+        if (b.getStatus() != BookingStatus.ACTIVE || b.getEndedAt() == null) {
+            throw ApiException.conflict("Only an active rental can be ended (status " + b.getStatus() + ")");
+        }
         Payment p = payments.find(b.getBookingId()).orElseThrow(() -> new IllegalStateException("No payment"));
         BigDecimal remaining = b.getPendingTotalCost().subtract(p.getAmount());
         if (remaining.signum() > 0) {
@@ -243,15 +275,15 @@ public class BookingService {
                         "Your rental ended but the remaining " + currency + " " + remaining
                                 + " could not be charged (" + failed.getFailureReason()
                                 + "). Please pay it online to finish your rental.");
-                throw new ApiException(HttpStatus.PAYMENT_REQUIRED, "Rental ended, but the remaining balance of "
-                        + currency + " " + remaining + " could not be charged: " + failed.getFailureReason()
+                return new Settlement(null, "Rental ended, but the remaining balance of " + currency + " "
+                        + remaining + " could not be charged: " + failed.getFailureReason()
                         + ". Pay it online to finish.");
             }
         } else if (remaining.signum() < 0) {
             payments.refundExcess(b, remaining.negate());
         }
         finishRental(b);
-        return toResponse(b);
+        return new Settlement(toResponse(b), null);
     }
 
     private void finishRental(Booking b) {

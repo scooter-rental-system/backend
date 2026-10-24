@@ -53,8 +53,10 @@ public class TestPaymentGateway implements PaymentGateway {
     private int refundCalls;
     private ChargeResult nextCharge;
     private RuntimeException chargeFailure;
+    private RuntimeException chargeResponseLost;
     private Outcome refundOutcome = Outcome.SUCCEEDED;
     private RuntimeException refundFailure;
+    private RuntimeException refundResponseLost;
 
     public synchronized void reset() {
         deliveries.clear();
@@ -68,8 +70,23 @@ public class TestPaymentGateway implements PaymentGateway {
         refundCalls = 0;
         nextCharge = null;
         chargeFailure = null;
+        chargeResponseLost = null;
         refundOutcome = Outcome.SUCCEEDED;
         refundFailure = null;
+        refundResponseLost = null;
+    }
+
+    /**
+     * New off-session charges are made at the provider, but the answer is lost and {@code error} is thrown, as
+     * when the connection drops after the provider has acted. {@code null} restores normal answers.
+     */
+    public synchronized void loseChargeResponses(RuntimeException error) {
+        chargeResponseLost = error;
+    }
+
+    /** Like {@link #loseChargeResponses} for refunds. */
+    public synchronized void loseRefundResponses(RuntimeException error) {
+        refundResponseLost = error;
     }
 
     // ── Test controls ─────────────────────────────────────────────────────────
@@ -239,6 +256,9 @@ public class TestPaymentGateway implements PaymentGateway {
         ChargeResult result = nextCharge == null ? ChargeResult.ok(id)
                 : new ChargeResult(nextCharge.outcome(), id, nextCharge.failureReason());
         charges.put(idempotencyKey, new Charge(customerId, paymentMethodRef, amount, currency, idempotencyKey, result));
+        if (chargeResponseLost != null) {
+            throw chargeResponseLost;
+        }
         return result;
     }
 
@@ -257,6 +277,9 @@ public class TestPaymentGateway implements PaymentGateway {
         ChargeResult result = new ChargeResult(refundOutcome, id,
                 refundOutcome == Outcome.FAILED ? "Refund declined by the test provider" : null);
         refunds.put(idempotencyKey, new Refund(intentId, amount, reason, idempotencyKey, result));
+        if (refundResponseLost != null) {
+            throw refundResponseLost;
+        }
         return result;
     }
 
