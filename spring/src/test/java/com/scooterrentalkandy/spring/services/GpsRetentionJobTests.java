@@ -122,7 +122,7 @@ class GpsRetentionJobTests extends PostgresIntegrationTest {
     @Test
     void retentionIsSixMonthsAndDefaultsToSixWhenUnset() {
         Clock fixed = Clock.fixed(Instant.parse("2026-10-24T21:45:30.123Z"), ZoneId.of("Asia/Colombo"));
-        AppProperties unset = new AppProperties(null, null, null, null, null, new AppProperties.Gps(null, 0));
+        AppProperties unset = new AppProperties(null, null, null, null, null, new AppProperties.Gps(null, 0), null);
 
         assertThat(props.gps().retentionMonths()).isEqualTo(6);
         assertThat(new GpsRetentionJob(gps, fixed, props).cutoff()).isEqualTo(LocalDateTime.of(2026, 4, 25, 3, 15, 30));

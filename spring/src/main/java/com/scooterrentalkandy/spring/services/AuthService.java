@@ -30,17 +30,21 @@ public class AuthService {
     static final String DUPLICATE_EMAIL = "An account with this email already exists";
     static final String DUPLICATE_NIC = "An account with this NIC number already exists";
     static final String ACCOUNT_DEACTIVATED = "This account has been deactivated";
+    static final String WELCOME_SUBJECT = "Welcome to Scooter Rent Kandy";
 
     private final UserRepository users;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final NotificationService notifications;
     /** Checked against when the email is unknown, so that case costs the same BCrypt work as a wrong password. */
     private final String unknownUserHash;
 
-    public AuthService(UserRepository users, PasswordEncoder passwordEncoder, JwtService jwtService) {
+    public AuthService(UserRepository users, PasswordEncoder passwordEncoder, JwtService jwtService,
+                       NotificationService notifications) {
         this.users = users;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.notifications = notifications;
         this.unknownUserHash = passwordEncoder.encode(UUID.randomUUID().toString());
     }
 
@@ -71,6 +75,9 @@ public class AuthService {
             // The checks above can race with a concurrent registration; the unique constraints decide.
             throw duplicateOrRethrow(ex);
         }
+        // SDS 4.1: welcome in-app, and by email once the registration has committed (when email is configured).
+        notifications.notify(user, WELCOME_SUBJECT, "Hi " + user.getFullName() + ", your account is ready. "
+                + "Browse the scooters available in Kandy and book one whenever you are ready to ride.");
         return new AuthResponse(jwtService.issue(user), UserResponse.from(user));
     }
 

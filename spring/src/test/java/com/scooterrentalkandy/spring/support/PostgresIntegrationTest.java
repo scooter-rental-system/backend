@@ -31,5 +31,6 @@ public abstract class PostgresIntegrationTest {
         registry.add("app.payments.stripe.secret-key", () -> "");
         registry.add("app.payments.stripe.publishable-key", () -> "");
         registry.add("app.payments.stripe.webhook-secret", () -> "");
+        registry.add("app.notifications.email.provider", () -> "");
     }
 }

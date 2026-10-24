@@ -23,7 +23,7 @@ class PaymentProviderConfigTests {
                                                    String webhook) {
         AppProperties props = new AppProperties(null, null, null, new AppProperties.Billing("LKR"),
                 new AppProperties.Payments(provider,
-                        new AppProperties.Payments.Stripe(secret, publishable, webhook)), null);
+                        new AppProperties.Payments.Stripe(secret, publishable, webhook)), null, null);
         return new ApplicationContextRunner()
                 .withBean(AppProperties.class, () -> props)
                 .withBean(Clock.class, Clock::systemUTC)

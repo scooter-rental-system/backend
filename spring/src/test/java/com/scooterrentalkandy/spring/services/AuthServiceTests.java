@@ -5,9 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.LocalDateTime;
@@ -41,6 +44,7 @@ class AuthServiceTests {
     private UserRepository users;
     private PasswordEncoder encoder;
     private JwtService jwt;
+    private NotificationService notifications;
     private AuthService auth;
 
     @BeforeEach
@@ -48,6 +52,7 @@ class AuthServiceTests {
         users = mock(UserRepository.class);
         encoder = mock(PasswordEncoder.class);
         jwt = mock(JwtService.class);
+        notifications = mock(NotificationService.class);
         when(encoder.encode(anyString())).thenReturn(UNKNOWN_USER_HASH);
         when(encoder.encode("secret-pass-1")).thenReturn("bcrypt(secret-pass-1)");
         when(jwt.issue(any(User.class))).thenReturn(TOKEN);
@@ -58,7 +63,7 @@ class AuthServiceTests {
             }
             return u;
         });
-        auth = new AuthService(users, encoder, jwt);
+        auth = new AuthService(users, encoder, jwt, notifications);
     }
 
     private static RegisterRequest registration() {
@@ -142,6 +147,15 @@ class AuthServiceTests {
     }
 
     @Test
+    void registerWelcomesTheNewCustomer() {
+        auth.register(registration());
+
+        User saved = savedUser();
+        verify(notifications).notify(eq(saved), eq(AuthService.WELCOME_SUBJECT),
+                argThat(message -> message.startsWith("Hi New Customer, your account is ready.")));
+    }
+
+    @Test
     void registerRejectsADuplicateEmailInAnyCase() {
         when(users.existsByEmailIgnoreCase("new.customer@example.test")).thenReturn(true);
 
@@ -152,6 +166,7 @@ class AuthServiceTests {
                 });
         verify(users, never()).saveAndFlush(any());
         verify(jwt, never()).issue(any());
+        verifyNoInteractions(notifications);
     }
 
     @Test
@@ -165,6 +180,7 @@ class AuthServiceTests {
                 });
         verify(users, never()).saveAndFlush(any());
         verify(jwt, never()).issue(any());
+        verifyNoInteractions(notifications);
     }
 
     @Test
