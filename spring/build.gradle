@@ -29,6 +29,8 @@ dependencies {
     implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
     runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
     runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+    // Official Stripe SDK (SDS 4.2): PaymentIntents, Customers, Refunds and webhook signature verification.
+    implementation 'com.stripe:stripe-java:34.0.0'
     compileOnly 'org.projectlombok:lombok'
     runtimeOnly 'org.postgresql:postgresql'
     annotationProcessor 'org.projectlombok:lombok'

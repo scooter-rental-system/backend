@@ -30,7 +30,7 @@ class FlywayMigrationTests extends PostgresIntegrationTest {
     void appliesTheConfiguredMigrationsInOrder() {
         MigrationInfo[] applied = flyway.info().applied();
         assertThat(Arrays.stream(applied).map(m -> m.getVersion().getVersion()))
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "10", "11", "12", "13");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "10", "11", "12", "13", "14");
         assertThat(applied).allSatisfy(m -> assertThat(m.getState()).isEqualTo(MigrationState.SUCCESS));
         assertThat(flyway.info().pending()).isEmpty();
     }
@@ -41,6 +41,6 @@ class FlywayMigrationTests extends PostgresIntegrationTest {
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'", String.class);
         assertThat(tables).contains("users", "scooters", "gear_items", "bookings", "booking_gear", "contracts",
                 "payments", "payment_transactions", "invoices", "invoice_lines", "notifications",
-                "maintenance_records", "gps_pings", "speed_violations");
+                "maintenance_records", "gps_pings", "speed_violations", "payment_provider_events");
     }
 }

@@ -187,7 +187,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
     }
 
     private void pay(User customer, UUID bookingId) throws Exception {
-        deliver(TestPaymentGateway.succeeded(intent(customer, bookingId), "pm_test_saved", "4242"));
+        deliver(gateway.succeeded(intent(customer, bookingId), "pm_test_saved", "4242"));
     }
 
     private Booking booking(UUID id) {
@@ -309,7 +309,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         CreatedIntent created = intent(owner, id);
         long notified = notificationsFor(owner);
 
-        deliver(TestPaymentGateway.succeeded(created, "pm_test_saved", "4242"));
+        deliver(gateway.succeeded(created, "pm_test_saved", "4242"));
 
         assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
         assertThat(scooters.findById(scooter.getScooterId()).orElseThrow().getStatus())
@@ -329,7 +329,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         UUID id = signedBooking(owner, saveScooter(), null);
         CreatedIntent created = intent(owner, id);
 
-        deliver(TestPaymentGateway.failed(created, "Your card was declined."));
+        deliver(gateway.failed(created, "Your card was declined."));
 
         assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
         Payment p = payment(id);
@@ -348,7 +348,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         User owner = saveUser(Role.USER);
         UUID id = signedBooking(owner, saveScooter(), null);
         CreatedIntent created = intent(owner, id);
-        TestPaymentGateway.Event success = TestPaymentGateway.succeeded(created, "pm_test_saved", "4242");
+        TestPaymentGateway.Event success = gateway.succeeded(created, "pm_test_saved", "4242");
         deliver(success);
         LocalDateTime paidAt = payment(id).getPaidAt();
         long notified = notificationsFor(owner);
@@ -366,7 +366,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
     void aWebhookWithABadSignatureIsRejected() throws Exception {
         User owner = saveUser(Role.USER);
         UUID id = signedBooking(owner, saveScooter(), null);
-        String payload = gateway.deliver(TestPaymentGateway.succeeded(intent(owner, id), "pm_test_saved", "4242"));
+        String payload = gateway.deliver(gateway.succeeded(intent(owner, id), "pm_test_saved", "4242"));
 
         webhook(payload, "forged").andExpect(status().isBadRequest());
         mvc.perform(post(WEBHOOK).contentType(MediaType.APPLICATION_JSON).content(payload))
@@ -403,6 +403,156 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
+    // ── Provider details ──────────────────────────────────────────────────────
+
+    @Test
+    void theConfigurationNamesTheProviderAndItsPublishableKey() throws Exception {
+        mvc.perform(as(saveUser(Role.USER), get("/api/payments/config")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.available").value(true))
+                .andExpect(jsonPath("$.provider").value("test"))
+                .andExpect(jsonPath("$.publishableKey").value("test-publishable-key"))
+                .andExpect(jsonPath("$.currency").value("LKR"));
+    }
+
+    @Test
+    void theCustomersProviderAccountIsCreatedOnceAndNeverShown() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+
+        CreatedIntent first = intent(owner, id);
+        CreatedIntent second = intent(owner, id);
+        UUID other = signedBooking(owner, saveScooter(), null);
+        CreatedIntent third = intent(owner, other);
+
+        assertThat(gateway.customers()).hasSize(1);
+        TestPaymentGateway.Customer customer = gateway.customers().getFirst();
+        assertThat(customer.userId()).isEqualTo(owner.getUserId());
+        assertThat(customer.email()).isEqualTo(owner.getEmail());
+        assertThat(customer.idempotencyKey()).isEqualTo("customer-" + owner.getUserId());
+        assertThat(users.findById(owner.getUserId()).orElseThrow().getStripeCustomerId()).isEqualTo(customer.id());
+        assertThat(first.customerId()).isEqualTo(customer.id());
+        assertThat(second.customerId()).isEqualTo(customer.id());
+        assertThat(third.customerId()).isEqualTo(customer.id());
+        mvc.perform(as(owner, get("/api/me")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stripeCustomerId").doesNotExist());
+        mvc.perform(as(owner, get("/api/bookings/" + id)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$..stripeCustomerId").isEmpty());
+    }
+
+    @Test
+    void intentIdempotencyKeysAreTheBookingAndAttemptNumber() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+
+        CreatedIntent first = intent(owner, id);
+        CreatedIntent second = intent(owner, id);
+
+        assertThat(first.idempotencyKey()).isEqualTo("booking-" + id + "-initial-intent-1");
+        assertThat(second.idempotencyKey()).isEqualTo("booking-" + id + "-initial-intent-2");
+    }
+
+    @Test
+    void anIntentTheProviderCanNoLongerCancelIsNotReplaced() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        CreatedIntent first = intent(owner, id);
+        gateway.notCancelable(first.id()); // the customer may be paying it right now
+
+        requestIntent(owner, id)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Your previous payment attempt is still being processed; "
+                        + "please wait a moment and refresh"));
+
+        assertThat(gateway.intents()).hasSize(1);
+        assertThat(payment(id).getStripePaymentId()).isEqualTo(first.id());
+        assertThat(transaction(payment(id), first.id()).getStatus()).isEqualTo(PaymentTransaction.Status.PENDING);
+    }
+
+    // ── Webhook integrity ─────────────────────────────────────────────────────
+
+    @Test
+    void aSuccessForAnotherAmountIsNotAcceptedAsPayment() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        CreatedIntent created = intent(owner, id);
+
+        deliver(gateway.succeeded(created.id(), new BigDecimal("1.00"), "LKR", created.metadata(), "pm_test", "4242"));
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
+        Payment p = payment(id);
+        assertThat(p.getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(p.getFailureReason()).isEqualTo("The provider reported a different amount or currency");
+        assertThat(p.getPaidAt()).isNull();
+        assertThat(transaction(p, created.id()).getStatus()).isEqualTo(PaymentTransaction.Status.FAILED);
+    }
+
+    @Test
+    void aSuccessInAnotherCurrencyIsNotAcceptedAsPayment() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        CreatedIntent created = intent(owner, id);
+
+        deliver(gateway.succeeded(created.id(), created.amount(), "USD", created.metadata(), "pm_test", "4242"));
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.FAILED);
+    }
+
+    @Test
+    void aSuccessForAnotherBookingsIntentIsNotAccepted() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        UUID other = signedBooking(owner, saveScooter(), null);
+        CreatedIntent otherIntent = intent(owner, other);
+        intent(owner, id);
+
+        // Correctly signed, but the intent belongs to the other booking.
+        deliver(gateway.succeeded(otherIntent.id(), otherIntent.amount(), "LKR",
+                java.util.Map.of("bookingId", id.toString(), "purpose", "INITIAL"), "pm_test", "4242"));
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.PENDING);
+    }
+
+    /**
+     * The event id is stored when processed. To show the second delivery is skipped rather than merely harmless,
+     * the booking and payment are put back to awaiting payment (as if the first delivery had not happened).
+     */
+    @Test
+    void anEventIsProcessedOnlyOnce() throws Exception {
+        User owner = saveUser(Role.USER);
+        UUID id = signedBooking(owner, saveScooter(), null);
+        TestPaymentGateway.Event success = gateway.succeeded(intent(owner, id), "pm_test_saved", "4242");
+        deliver(success);
+        long notified = notificationsFor(owner);
+        Booking b = booking(id);
+        b.setStatus(BookingStatus.PENDING);
+        Payment p = payment(id);
+        p.setStatus(PaymentStatus.PENDING);
+        em.flush();
+
+        deliver(success);
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
+        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.PENDING);
+        assertThat(notificationsFor(owner)).isEqualTo(notified);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_provider_events WHERE event_id = ?", Long.class,
+                success.id())).isEqualTo(1);
+    }
+
+    @Test
+    void thePublicMockStripeEndpointIsGone() throws Exception {
+        String confirm = "/mock-stripe/v1/payment_intents/pi_any/confirm";
+
+        mvc.perform(post(confirm).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(as(saveUser(Role.USER), post(confirm)).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isNotFound());
+    }
+
     // ── Cancellation and refund ───────────────────────────────────────────────
 
     @Test
@@ -434,7 +584,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.status").value("CANCELLED"));
 
         assertThat(gateway.refunds()).hasSize(1);
-        assertThat(gateway.refunds().getFirst().paymentReference()).isEqualTo(intentId);
+        assertThat(gateway.refunds().getFirst().intentId()).isEqualTo(intentId);
         assertThat(gateway.refunds().getFirst().amount()).isEqualByComparingTo("750.00");
         assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.REFUNDED);
         assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.CANCELLED);

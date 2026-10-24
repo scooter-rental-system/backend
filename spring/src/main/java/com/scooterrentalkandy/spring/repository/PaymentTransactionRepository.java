@@ -13,4 +13,7 @@ public interface PaymentTransactionRepository extends JpaRepository<PaymentTrans
     Optional<PaymentTransaction> findFirstByPayment_PaymentIdAndProviderRefOrderByCreatedAtDesc(UUID paymentId, String providerRef);
 
     List<PaymentTransaction> findByPayment_PaymentIdAndStatus(UUID paymentId, PaymentTransaction.Status status);
+
+    /** Attempt counter for idempotency keys: provider calls of this kind already recorded for the payment. */
+    long countByPayment_PaymentIdAndKind(UUID paymentId, PaymentTransaction.Kind kind);
 }

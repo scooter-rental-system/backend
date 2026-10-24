@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import com.scooterrentalkandy.spring.dto.ErrorResponse;
+import com.scooterrentalkandy.spring.services.PaymentProviderException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -30,6 +31,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ErrorResponse> handleApi(ApiException ex) {
         return build(ex.getStatus(), ex.getMessage(), null);
+    }
+
+    /** The payment provider did not answer: nothing was confirmed, and the request can be retried safely. */
+    @ExceptionHandler(PaymentProviderException.class)
+    public ResponseEntity<ErrorResponse> handlePaymentProvider(PaymentProviderException ex) {
+        return build(HttpStatus.BAD_GATEWAY, ex.getMessage(), null);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

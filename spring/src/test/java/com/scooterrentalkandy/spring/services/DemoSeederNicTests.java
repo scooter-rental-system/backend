@@ -44,7 +44,19 @@ class DemoSeederNicTests extends PostgresIntegrationTest {
     void completesTheRestOfTheDemoData() {
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM scooters", Integer.class)).isEqualTo(6);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM bookings", Integer.class)).isPositive();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM gear_items", Integer.class)).isEqualTo(8);
+    }
+
+    /** A booking is paid only when the payment provider confirms it; the seeder fakes no financial history. */
+    @Test
+    void seedsNoBookingsOrPayments() {
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bookings", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payments", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_transactions", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM invoices", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM scooters WHERE status <> 'AVAILABLE'", Integer.class))
+                .isZero();
     }
 
     @AfterAll
