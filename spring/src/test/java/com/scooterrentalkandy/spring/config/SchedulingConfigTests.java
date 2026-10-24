@@ -22,6 +22,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.support.PropertiesLoaderUtils;
 import org.springframework.scheduling.config.ScheduledTaskHolder;
+import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * Which scheduled jobs exist under which properties. Enabled scheduling is checked in a small context with mocked
@@ -44,8 +45,9 @@ class SchedulingConfigTests extends PostgresIntegrationTest {
             .withBean(BookingRepository.class, () -> mock(BookingRepository.class))
             .withBean(NotificationService.class, () -> notifications)
             .withBean(GpsService.class, () -> gps)
+            .withBean(PlatformTransactionManager.class, () -> mock(PlatformTransactionManager.class))
             .withBean(AppProperties.class, () -> new AppProperties(null, null, null, null, null,
-                    new AppProperties.Gps(null, 6)))
+                    new AppProperties.Gps(null, 6), null))
             .withBean(Clock.class, Clock::systemDefaultZone);
 
     private static List<String> scheduledTasks(ApplicationContext context) {

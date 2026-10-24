@@ -15,28 +15,39 @@ import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.entity.User;
 import com.scooterrentalkandy.spring.repository.NotificationRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
+import com.scooterrentalkandy.spring.services.NotificationEmailDispatcher.EmailRequested;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * In-app notifications are database rows and always available. Email goes out only when a real provider is
+ * configured (an EmailSender bean exists), and only after the calling transaction commits (see
+ * NotificationEmailDispatcher). There is no SMS provider, so no SMS is sent or recorded.
+ */
 @Service
 public class NotificationService {
 
     private final NotificationRepository repository;
-    private final OutboundMessageSender sender;
     private final UserRepository users;
+    private final ObjectProvider<EmailSender> emailSender;
+    private final ApplicationEventPublisher events;
     private final Clock clock;
 
-    public NotificationService(NotificationRepository repository, OutboundMessageSender sender,
-                               UserRepository users, Clock clock) {
+    public NotificationService(NotificationRepository repository, UserRepository users,
+                               ObjectProvider<EmailSender> emailSender, ApplicationEventPublisher events,
+                               Clock clock) {
         this.repository = repository;
-        this.sender = sender;
         this.users = users;
+        this.emailSender = emailSender;
+        this.events = events;
         this.clock = clock;
     }
 
     /**
-     * Records an in-app notification and sends it by email (and SMS if a phone number is on file). An inactive
-     * user gets nothing.
+     * Records an in-app notification and, when email is configured, requests the same message by email once the
+     * calling transaction commits. An inactive user gets nothing.
      */
     @Transactional
     public void notify(User user, String subject, String message) {
@@ -44,11 +55,8 @@ public class NotificationService {
             return;
         }
         save(user, Channel.IN_APP, subject, message, Status.SENT);
-        boolean emailed = sender.sendEmail(user.getEmail(), subject, message);
-        save(user, Channel.EMAIL, subject, message, emailed ? Status.SENT : Status.FAILED);
-        if (user.getPhone() != null && !user.getPhone().isBlank()) {
-            boolean texted = sender.sendSms(user.getPhone(), subject + ": " + message);
-            save(user, Channel.SMS, subject, message, texted ? Status.SENT : Status.FAILED);
+        if (emailSender.getIfAvailable() != null) {
+            events.publishEvent(new EmailRequested(user.getUserId(), user.getEmail(), subject, message));
         }
     }
 
@@ -57,21 +65,6 @@ public class NotificationService {
     public void notifyAdmins(String subject, String message) {
         users.findByRoleInAndIsActiveTrue(Role.ADMINS)
                 .forEach(admin -> save(admin, Channel.IN_APP, subject, message, Status.SENT));
-    }
-
-    /**
-     * Urgent alert to every active admin: in-app plus SMS (SDS 7.1: speed-violation alerts by SNS; SMS goes through
-     * the outbound sender, which is the mock SNS in development).
-     */
-    @Transactional
-    public void alertAdmins(String subject, String message) {
-        users.findByRoleInAndIsActiveTrue(Role.ADMINS).forEach(admin -> {
-            save(admin, Channel.IN_APP, subject, message, Status.SENT);
-            if (admin.getPhone() != null && !admin.getPhone().isBlank()) {
-                boolean texted = sender.sendSms(admin.getPhone(), subject + ": " + message);
-                save(admin, Channel.SMS, subject, message, texted ? Status.SENT : Status.FAILED);
-            }
-        });
     }
 
     /** Every active customer (role USER); returns how many were notified. */

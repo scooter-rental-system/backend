@@ -11,6 +11,7 @@ import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -50,8 +51,20 @@ public interface BookingRepository extends JpaRepository<Booking, UUID> {
     List<UUID> findIdsByStatusAndCreatedAtBefore(@Param("status") BookingStatus status,
                                                  @Param("cutoff") LocalDateTime cutoff);
 
-    @EntityGraph(attributePaths = {"scooter", "user"})
-    List<Booking> findByStatusAndStartTimeBetween(BookingStatus status, LocalDateTime from, LocalDateTime to);
+    /** Bookings in {@code status} starting in [from, to) that have not had their reminder yet. */
+    @Query("select b.bookingId from Booking b where b.status = :status and b.startTime >= :from "
+            + "and b.startTime < :to and b.reminderSentAt is null")
+    List<UUID> findReminderCandidates(@Param("status") BookingStatus status, @Param("from") LocalDateTime from,
+                                      @Param("to") LocalDateTime to);
+
+    /**
+     * Claims a booking's reminder: 1 for exactly one caller, 0 once it is claimed or the booking has left
+     * {@code status}. A concurrent claim waits for the row lock and then sees the committed value.
+     */
+    @Modifying
+    @Query("update Booking b set b.reminderSentAt = :at where b.bookingId = :id and b.status = :status "
+            + "and b.reminderSentAt is null")
+    int claimReminder(@Param("id") UUID id, @Param("status") BookingStatus status, @Param("at") LocalDateTime at);
 
     /** Rentals whose time overlaps the window (open rentals run until now). */
     @EntityGraph(attributePaths = {"scooter"})

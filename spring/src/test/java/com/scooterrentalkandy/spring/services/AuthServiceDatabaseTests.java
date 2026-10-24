@@ -39,6 +39,9 @@ class AuthServiceDatabaseTests extends PostgresIntegrationTest {
     @Autowired
     private JwtService jwt;
 
+    @Autowired
+    private NotificationService notifications;
+
     private static RegisterRequest registration(String email, String nic) {
         return new RegisterRequest(email, "secret-pass-1", "Race Rider", "+94 70 000 0000", nic, "", "", "");
     }
@@ -61,7 +64,7 @@ class AuthServiceDatabaseTests extends PostgresIntegrationTest {
                         throw e.getCause();
                     }
                 });
-        return new AuthService(racing, encoder, jwt);
+        return new AuthService(racing, encoder, jwt, notifications);
     }
 
     @Test

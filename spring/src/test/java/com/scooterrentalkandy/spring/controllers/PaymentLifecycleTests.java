@@ -210,7 +210,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
                 .orElseThrow();
     }
 
-    /** In-app notifications only (each notification also writes email and SMS rows). */
+    /** In-app notifications only. */
     private long notificationsFor(User user) {
         em.flush();
         return jdbc.queryForObject("SELECT count(*) FROM notifications WHERE user_id = ? AND channel = 'IN_APP'",
@@ -328,6 +328,13 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         assertThat(p.getCardLast4()).isEqualTo("4242");
         assertThat(transaction(p, created.id()).getStatus()).isEqualTo(PaymentTransaction.Status.SUCCESS);
         assertThat(notificationsFor(owner)).isEqualTo(notified + 1);
+        // The confirmation is in-app; with no email provider nothing is emailed, texted or recorded as delivered.
+        em.flush();
+        assertThat(jdbc.queryForObject("SELECT subject FROM notifications WHERE user_id = ? AND channel = 'IN_APP' "
+                + "ORDER BY created_at DESC LIMIT 1", String.class, owner.getUserId()))
+                .isEqualTo("Booking confirmed: " + booking(id).getReference());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM notifications WHERE user_id = ? AND channel <> 'IN_APP'",
+                Long.class, owner.getUserId())).isZero();
     }
 
     @Test

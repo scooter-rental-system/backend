@@ -5,7 +5,8 @@ import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "app")
-public record AppProperties(Jwt jwt, Cors cors, Seed seed, Billing billing, Payments payments, Gps gps) {
+public record AppProperties(Jwt jwt, Cors cors, Seed seed, Billing billing, Payments payments, Gps gps,
+                            Notifications notifications) {
 
     public record Jwt(String secret, long expirationMinutes) {
     }
@@ -35,5 +36,16 @@ public record AppProperties(Jwt jwt, Cors cors, Seed seed, Billing billing, Paym
      * device reports are refused. {@code retentionMonths}: how long GPS logs are kept (SDS 8.3: 6 months).
      */
     public record Gps(String deviceApiKey, int retentionMonths) {
+    }
+
+    /**
+     * External notification channels; in-app notifications need no configuration. {@code email.provider}: from
+     * NOTIFICATIONS_EMAIL_PROVIDER. Empty means email is off: nothing is sent and nothing is recorded as sent.
+     * There is no SMS provider.
+     */
+    public record Notifications(Email email) {
+
+        public record Email(String provider) {
+        }
     }
 }

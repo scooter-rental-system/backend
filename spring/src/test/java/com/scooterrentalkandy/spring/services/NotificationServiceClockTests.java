@@ -23,6 +23,8 @@ import com.scooterrentalkandy.spring.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
 
 /** Notification times come from the injected clock, never the system clock. */
 class NotificationServiceClockTests {
@@ -33,13 +35,18 @@ class NotificationServiceClockTests {
 
     private final NotificationRepository repository = mock(NotificationRepository.class);
     private final UserRepository users = mock(UserRepository.class);
-    private final OutboundMessageSender sender = mock(OutboundMessageSender.class);
     private NotificationService service;
 
     @BeforeEach
     void setUp() {
         when(repository.save(any(Notification.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        service = new NotificationService(repository, sender, users, FIXED);
+        service = new NotificationService(repository, users, emptyProvider(), mock(ApplicationEventPublisher.class),
+                FIXED);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ObjectProvider<EmailSender> emptyProvider() {
+        return mock(ObjectProvider.class);
     }
 
     private static User user(Role role) {

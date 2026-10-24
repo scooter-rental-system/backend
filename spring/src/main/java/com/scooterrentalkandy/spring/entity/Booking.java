@@ -99,6 +99,10 @@ public class Booking {
     @Column(name = "cancelled_at")
     private LocalDateTime cancelledAt;
 
+    /** When the day-before reminder was sent; set once by BookingReminderJob. */
+    @Column(name = "reminder_sent_at")
+    private LocalDateTime reminderSentAt;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
