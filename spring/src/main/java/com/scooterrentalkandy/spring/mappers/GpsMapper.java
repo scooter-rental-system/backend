@@ -32,6 +32,7 @@ public final class GpsMapper {
                                               boolean stale) {
         return new LivePosition(s.getScooterId(), s.getCode(), s.getModel(), s.getPlateNumber(), s.getStatus(),
                 s.getLatitude(), s.getLongitude(), s.getLastSeenAt(),
+                activeRental == null ? null : activeRental.getBookingId(),
                 activeRental == null ? null : activeRental.getReference(),
                 activeRental == null ? null : activeRental.getUser().getFullName(), distanceFromBaseKm, stale);
     }

@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import com.scooterrentalkandy.spring.dto.GpsDtos.BookingGpsHistory;
 import com.scooterrentalkandy.spring.dto.GpsDtos.LivePosition;
 import com.scooterrentalkandy.spring.dto.GpsDtos.Point;
 import com.scooterrentalkandy.spring.dto.GpsDtos.SpeedViolationResponse;
@@ -200,6 +201,20 @@ public class GpsService {
         }
         List<Point> trail = rentalTrail(b.getBookingId());
         return new Tracking(position(b.getScooter()), trail, distance.totalKm(trail));
+    }
+
+    /**
+     * Admin-only (URL rule /api/admin/**): the stored GPS route of one booking, in time order. Only that booking's own
+     * reports are returned, never another rental's; old reports go with the normal retention job.
+     */
+    @Transactional(readOnly = true)
+    public BookingGpsHistory bookingHistory(UUID bookingId) {
+        Booking b = bookings.findWithDetailsByBookingId(bookingId).orElseThrow(() -> ApiException.notFound("Booking"));
+        List<Point> points = rentalTrail(b.getBookingId());
+        LocalDateTime end = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
+        return new BookingGpsHistory(b.getBookingId(), b.getReference(), b.getUser().getFullName(),
+                b.getScooter().getCode(), b.getScooter().getModel(), b.getScooter().getPlateNumber(),
+                b.getStatus().name(), b.getStartTime(), end, points, distance.totalKm(points));
     }
 
     /** computeTotalDistance: distance along the booking's GPS logs between the given times. */

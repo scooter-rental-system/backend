@@ -51,6 +51,8 @@ public final class GpsDtos {
             Double latitude,
             Double longitude,
             LocalDateTime lastSeen,
+            /** The rental under way on this scooter, if any (opens its GPS history for admins). */
+            UUID activeBookingId,
             String activeBookingReference,
             String riderName,
             double distanceFromBaseKm,
@@ -66,6 +68,15 @@ public final class GpsDtos {
     }
 
     public record Tracking(LivePosition position, List<Point> trail, BigDecimal distanceKm) {
+    }
+
+    /**
+     * Admin-only: the GPS route of ONE rental, from its own stored reports in time order (kept for the normal
+     * retention period). {@code end} is the rental's end, or null while it is still under way.
+     */
+    public record BookingGpsHistory(UUID bookingId, String reference, String customerName, String scooterCode,
+                                    String scooterModel, String plateNumber, String status, LocalDateTime start,
+                                    LocalDateTime end, List<Point> points, BigDecimal distanceKm) {
     }
 }
 
