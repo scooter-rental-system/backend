@@ -1,8 +1,8 @@
 package com.scooterrentalkandy.spring.controllers;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -201,13 +201,13 @@ class RepairReportTests extends PostgresIntegrationTest {
         mvc.perform(as(admin, get("/api/admin/repairs")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.id == '" + id + "')].status").value("REPORTED"));
-        mvc.perform(as(admin, json(patch("/api/admin/repairs/" + id),
+        mvc.perform(as(admin, json(put("/api/admin/repairs/" + id),
                         "{\"status\": \"RESOLVED\", \"adminNote\": \"Receipt checked\", \"approvedAmount\": 2000}")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("RESOLVED"))
                 .andExpect(jsonPath("$.adminNote").value("Receipt checked"))
                 .andExpect(jsonPath("$.approvedAmount").value(2000));
-        mvc.perform(as(customer, json(patch("/api/admin/repairs/" + id), "{\"status\": \"RESOLVED\"}")))
+        mvc.perform(as(customer, json(put("/api/admin/repairs/" + id), "{\"status\": \"RESOLVED\"}")))
                 .andExpect(status().isForbidden());
     }
 
@@ -216,12 +216,12 @@ class RepairReportTests extends PostgresIntegrationTest {
         User customer = saveUser(Role.USER);
         User admin = saveUser(Role.ADMIN);
         String id = report(customer, inProgress(customer), "{\"description\": \"Flat tyre\", \"selfArranged\": false}");
-        mvc.perform(as(admin, json(patch("/api/admin/repairs/" + id),
+        mvc.perform(as(admin, json(put("/api/admin/repairs/" + id),
                         "{\"status\": \"ASSISTANCE_ARRANGED\", \"approvedAmount\": 500}")))
                 .andExpect(status().isBadRequest());
-        mvc.perform(as(admin, json(patch("/api/admin/repairs/" + id), "{\"status\": \"UNDER_REVIEW\", \"approvedAmount\": -5}")))
+        mvc.perform(as(admin, json(put("/api/admin/repairs/" + id), "{\"status\": \"UNDER_REVIEW\", \"approvedAmount\": -5}")))
                 .andExpect(status().isBadRequest());
-        mvc.perform(as(admin, json(patch("/api/admin/repairs/" + id), "{\"status\": \"ASSISTANCE_ARRANGED\"}")))
+        mvc.perform(as(admin, json(put("/api/admin/repairs/" + id), "{\"status\": \"ASSISTANCE_ARRANGED\"}")))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ASSISTANCE_ARRANGED"));
     }
 
