@@ -95,6 +95,7 @@ class PaymentReadEndpointsTests extends PostgresIntegrationTest {
         s.setCode("RD-" + id);
         s.setModel("Test Scooter");
         s.setPlateNumber("RDP-" + id);
+        s.setDailyRate(new BigDecimal("2500.00"));
         s.setHourlyRate(new BigDecimal("250.00"));
         s.setPerKmRate(new BigDecimal("15.00"));
         scooters.saveAndFlush(s);

@@ -76,6 +76,7 @@ class BookingTrackingTests extends PostgresIntegrationTest {
         s.setCode("TK-" + id);
         s.setModel("Test Scooter");
         s.setPlateNumber("TKP-" + id);
+        s.setDailyRate(new BigDecimal("2500.00"));
         s.setHourlyRate(new BigDecimal("250.00"));
         s.setPerKmRate(new BigDecimal("15.00"));
         s.setLatitude(7.31);

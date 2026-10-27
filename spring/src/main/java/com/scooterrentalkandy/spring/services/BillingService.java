@@ -37,7 +37,7 @@ public class BillingService {
         this.currency = props.billing().currency();
     }
 
-    /** One FINAL invoice per booking: rental hours, GPS distance and gear, exactly as billed. */
+    /** One FINAL invoice per booking: rental days and extra hours, GPS distance and gear, exactly as billed. */
     @Transactional
     public Invoice issueFinalInvoice(Booking b, FinalBill bill) {
         if (invoices.findFirstByBooking_BookingIdAndKind(b.getBookingId(), Invoice.Kind.FINAL).isPresent()) {
@@ -50,9 +50,19 @@ public class BillingService {
         inv.setCurrency(currency);
         inv.setIssuedAt(LocalDateTime.now(clock));
         var s = b.getScooter();
-        inv.addLine("Scooter " + s.getModel() + " (" + s.getPlateNumber() + "): rental hours",
-                BigDecimal.valueOf(bill.hours()), bill.hourlyRate(), bill.timeCost());
-        inv.addLine("Distance from GPS (km)", bill.distanceKm(), bill.perKmRate(), bill.distanceCost());
+        String scooter = "Scooter " + s.getModel() + " (" + s.getPlateNumber() + ")";
+        if (bill.days() > 0) {
+            inv.addLine(scooter + ": " + bill.days() + " day" + (bill.days() == 1 ? "" : "s"),
+                    BigDecimal.valueOf(bill.days()), bill.dailyRate(), bill.dayCost());
+        }
+        if (bill.extraHours() > 0) {
+            inv.addLine(scooter + ": " + bill.extraHours() + " extra hour" + (bill.extraHours() == 1 ? "" : "s"),
+                    BigDecimal.valueOf(bill.extraHours()), bill.hourlyRate(), bill.extraHourCost());
+        }
+        // Only the kilometres above the allowance (120 km per charged day) are charged; the line says how many.
+        inv.addLine("Distance from GPS: " + bill.distanceKm().toPlainString() + " km, "
+                        + bill.includedKm().toPlainString() + " km included; excess km",
+                bill.excessKm(), bill.perKmRate(), bill.distanceCost());
         for (GearLine g : bill.gear()) {
             inv.addLine(g.name() + " x" + g.quantity() + ", " + g.days() + " day" + (g.days() == 1 ? "" : "s"),
                     BigDecimal.valueOf((long) g.quantity() * g.days()), g.dailyRate(), g.lineTotal());

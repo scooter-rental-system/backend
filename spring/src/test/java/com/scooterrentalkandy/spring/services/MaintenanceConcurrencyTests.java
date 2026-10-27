@@ -133,6 +133,7 @@ class MaintenanceConcurrencyTests extends PostgresIntegrationTest {
         s.setCode("MR-" + id);
         s.setModel("Test Scooter");
         s.setPlateNumber("MRP-" + id);
+        s.setDailyRate(new BigDecimal("2500.00"));
         s.setHourlyRate(new BigDecimal("250.00"));
         s.setPerKmRate(new BigDecimal("15.00"));
         Scooter saved = scooters.saveAndFlush(s);

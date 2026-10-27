@@ -30,10 +30,14 @@ public final class BookingDtos {
     public record QuoteRequest(@NotNull UUID scooterId, List<@Valid GearSelectionRequest> gear) {
     }
 
-    /** Rates and the initial charge (1 hour + 1 gear day); the final total is known only when the rental ends. */
+    /**
+     * Rates and the initial charge (the one-hour minimum + 1 gear day); the final total is known only when the rental
+     * ends. {@code hourlyRate} is the extra-hour rate (see PricingService).
+     */
     public record Quote(
             UUID scooterId,
             String currency,
+            BigDecimal dailyRate,
             BigDecimal hourlyRate,
             BigDecimal perKmRate,
             List<GearLine> gear,
@@ -61,7 +65,14 @@ public final class BookingDtos {
     }
 
     public record ScooterSummary(UUID id, String code, String model, String plateNumber, String imageUrl,
-                                 BigDecimal hourlyRate, BigDecimal perKmRate) {
+                                 BigDecimal dailyRate, BigDecimal hourlyRate, BigDecimal perKmRate) {
+    }
+
+    /**
+     * An ended rental under the pricing rule: charged days and extra hours, and the distance allowance (120 km per
+     * charged day) with the kilometres above it.
+     */
+    public record RentalBreakdown(long chargedDays, long extraHours, BigDecimal includedKm, BigDecimal excessKm) {
     }
 
     public record PaymentSummary(
@@ -91,6 +102,8 @@ public final class BookingDtos {
             LocalDateTime startTime,
             LocalDateTime endTime,
             Long billableHours,
+            /** How the ended rental is charged (null until it ends); see PricingService. */
+            RentalBreakdown breakdown,
             BigDecimal distanceKm,
             BigDecimal totalCost,
             /** Balance due only: the frozen settlement (endTime and totalCost stay null until COMPLETED). */

@@ -112,6 +112,7 @@ class BookingReminderJobTests extends PostgresIntegrationTest {
         s.setCode("RM-" + id);
         s.setModel("Reminder Scooter");
         s.setPlateNumber("RMP-" + id);
+        s.setDailyRate(new BigDecimal("2500.00"));
         s.setHourlyRate(new BigDecimal("250.00"));
         s.setPerKmRate(new BigDecimal("15.00"));
         Booking b = new Booking();

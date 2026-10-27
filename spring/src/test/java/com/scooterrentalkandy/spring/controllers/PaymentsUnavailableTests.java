@@ -96,6 +96,7 @@ class PaymentsUnavailableTests {
         s.setCode("NP-" + id);
         s.setModel("Test Scooter");
         s.setPlateNumber("NPP-" + id);
+        s.setDailyRate(new BigDecimal("2500.00"));
         s.setHourlyRate(new BigDecimal("250.00"));
         s.setPerKmRate(new BigDecimal("15.00"));
         scooters.saveAndFlush(s);

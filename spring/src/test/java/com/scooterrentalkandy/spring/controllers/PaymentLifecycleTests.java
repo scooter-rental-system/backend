@@ -126,6 +126,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         s.setCode("PY-" + id);
         s.setModel("Test Scooter");
         s.setPlateNumber("PYP-" + id);
+        s.setDailyRate(new BigDecimal("2500.00"));
         s.setHourlyRate(new BigDecimal("250.00"));
         s.setPerKmRate(new BigDecimal("15.00"));
         return scooters.saveAndFlush(s);
@@ -772,7 +773,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
 
     /**
      * A paid rental that started 2.5 hours ago (3 billable hours), with two stored GPS points 0.01° of latitude
-     * apart (1.11 km): final total 3 x 250.00 + 1.11 x 15.00 = 766.65, of which 250.00 was paid up front.
+     * apart (1.11 km, within the 120 km included): final total 3 x 250.00 = 750.00, of which 250.00 was paid up front.
      */
     private UUID rentalUnderWay(User owner) throws Exception {
         Scooter scooter = saveScooter();
@@ -804,25 +805,29 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.distanceKm").value(1.11))
-                .andExpect(jsonPath("$.totalCost").value(766.65));
+                .andExpect(jsonPath("$.totalCost").value(750.00))
+                .andExpect(jsonPath("$.breakdown.chargedDays").value(0))
+                .andExpect(jsonPath("$.breakdown.extraHours").value(3))
+                .andExpect(jsonPath("$.breakdown.includedKm").value(120.00))
+                .andExpect(jsonPath("$.breakdown.excessKm").value(0.0));
 
         assertThat(gateway.charges()).hasSize(1);
         TestPaymentGateway.Charge charge = gateway.charges().getFirst();
-        assertThat(charge.amount()).isEqualByComparingTo("516.65");
+        assertThat(charge.amount()).isEqualByComparingTo("500.00");
         assertThat(charge.currency()).isEqualTo("LKR");
         assertThat(charge.paymentMethodRef()).isEqualTo("pm_test_saved");
         assertThat(charge.customerId()).isEqualTo(users.findById(owner.getUserId()).orElseThrow().getStripeCustomerId());
         assertThat(charge.idempotencyKey()).isEqualTo("booking-" + id + "-balance-charge-1");
         Payment p = payment(id);
-        assertThat(p.getAmount()).isEqualByComparingTo("766.65");
+        assertThat(p.getAmount()).isEqualByComparingTo("750.00");
         assertThat(p.getBalanceDue()).isNull();
         mvc.perform(as(owner, get("/api/bookings/" + id + "/invoices")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].kind").value("FINAL"))
-                .andExpect(jsonPath("$[0].total").value(766.65))
+                .andExpect(jsonPath("$[0].total").value(750.00))
                 .andExpect(jsonPath("$[0].lines[0].quantity").value(3))
-                .andExpect(jsonPath("$[0].lines[1].quantity").value(1.11))
-                .andExpect(jsonPath("$[0].lines[1].amount").value(16.65))
+                .andExpect(jsonPath("$[0].lines[1].quantity").value(0.0))
+                .andExpect(jsonPath("$[0].lines[1].amount").value(0.0))
                 .andExpect(jsonPath("$[0].paymentStatus").value("SUCCESS"));
     }
 
@@ -834,38 +839,38 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
 
         mvc.perform(as(owner, put("/api/bookings/" + id + "/complete")))
                 .andExpect(status().isPaymentRequired())
-                .andExpect(jsonPath("$.message").value("Rental ended, but the remaining balance of LKR 516.65 could "
+                .andExpect(jsonPath("$.message").value("Rental ended, but the remaining balance of LKR 500.00 could "
                         + "not be charged: Your card was declined.. Pay it online to finish."));
 
         Booking ended = booking(id);
         assertThat(ended.getStatus()).isEqualTo(BookingStatus.ACTIVE);
         assertThat(ended.getEndedAt()).isNotNull();
-        assertThat(ended.getPendingTotalCost()).isEqualByComparingTo("766.65");
-        assertThat(payment(id).getBalanceDue()).isEqualByComparingTo("516.65");
+        assertThat(ended.getPendingTotalCost()).isEqualByComparingTo("750.00");
+        assertThat(payment(id).getBalanceDue()).isEqualByComparingTo("500.00");
         LocalDateTime endedAt = ended.getEndedAt();
 
         // Trying again charges the same frozen amount as a new attempt.
         mvc.perform(as(owner, put("/api/bookings/" + id + "/complete"))).andExpect(status().isPaymentRequired());
         assertThat(gateway.charges()).extracting(TestPaymentGateway.Charge::idempotencyKey)
                 .containsExactly("booking-" + id + "-balance-charge-1", "booking-" + id + "-balance-charge-2");
-        assertThat(gateway.charges()).allSatisfy(c -> assertThat(c.amount()).isEqualByComparingTo("516.65"));
+        assertThat(gateway.charges()).allSatisfy(c -> assertThat(c.amount()).isEqualByComparingTo("500.00"));
         assertThat(booking(id).getEndedAt()).isEqualTo(endedAt);
 
         // The customer pays the balance online.
         mvc.perform(as(owner, post("/api/bookings/" + id + "/balance-intent")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.purpose").value("BALANCE"))
-                .andExpect(jsonPath("$.amount").value(516.65));
+                .andExpect(jsonPath("$.amount").value(500.00));
         CreatedIntent balance = gateway.intents().getLast();
         assertThat(balance.idempotencyKey()).isEqualTo("booking-" + id + "-balance-intent-3");
         deliver(gateway.succeeded(balance, "pm_test_new", "5555"));
 
         Booking completed = booking(id);
         assertThat(completed.getStatus()).isEqualTo(BookingStatus.COMPLETED);
-        assertThat(completed.getTotalCost()).isEqualByComparingTo("766.65");
+        assertThat(completed.getTotalCost()).isEqualByComparingTo("750.00");
         assertThat(completed.getEndTime()).isEqualTo(endedAt);
         Payment p = payment(id);
-        assertThat(p.getAmount()).isEqualByComparingTo("766.65");
+        assertThat(p.getAmount()).isEqualByComparingTo("750.00");
         assertThat(p.getBalanceDue()).isNull();
     }
 
@@ -884,7 +889,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         deliver(gateway.succeeded(charge.result().reference(), charge.amount(), "LKR",
                 java.util.Map.of("bookingId", id.toString(), "purpose", "BALANCE"), null, null));
         assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.COMPLETED);
-        assertThat(payment(id).getAmount()).isEqualByComparingTo("766.65");
+        assertThat(payment(id).getAmount()).isEqualByComparingTo("750.00");
         assertThat(payment(id).getPaymentMethodRef()).isEqualTo("pm_test_saved");
     }
 

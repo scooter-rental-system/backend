@@ -136,6 +136,7 @@ public class ScooterService {
         s.setModel(req.model().trim());
         s.setPlateNumber(req.plateNumber().trim().toUpperCase());
         s.setEngineCc(req.engineCc());
+        s.setDailyRate(req.dailyRate());
         s.setHourlyRate(req.hourlyRate());
         s.setPerKmRate(req.perKmRate());
         s.setTotalMileage(req.totalMileage().setScale(2, java.math.RoundingMode.HALF_UP));

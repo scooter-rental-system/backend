@@ -18,6 +18,7 @@ import com.scooterrentalkandy.spring.dto.BookingDtos.CreateBookingRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.GearSelectionRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.Quote;
 import com.scooterrentalkandy.spring.dto.BookingDtos.QuoteRequest;
+import com.scooterrentalkandy.spring.dto.BookingDtos.RentalBreakdown;
 import com.scooterrentalkandy.spring.dto.BookingDtos.SignContractRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.Stage;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
@@ -106,7 +107,8 @@ public class BookingService {
     public Quote quote(QuoteRequest req) {
         Scooter scooter = scooters.findById(req.scooterId()).orElseThrow(() -> ApiException.notFound("Scooter"));
         InitialCharge c = pricing.initialCharge(scooter, resolveGear(req.gear(), false));
-        return new Quote(scooter.getScooterId(), currency, c.hourlyRate(), c.perKmRate(), c.gear(), c.gearCost(), c.total());
+        return new Quote(scooter.getScooterId(), currency, c.dailyRate(), c.hourlyRate(), c.perKmRate(), c.gear(),
+                c.gearCost(), c.total());
     }
 
     /** SDS 4.2 steps 1-6: validate availability and create the booking as PENDING. */
@@ -440,7 +442,18 @@ public class BookingService {
         BigDecimal initialCharge = pricing.initialCharge(b.getScooter(), PricingService.selectionsOf(b)).total();
         LocalDateTime ended = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
         Long hours = ended == null ? null : PricingService.billableHours(b.getStartTime(), ended);
-        return BookingMapper.toResponse(b, p, stage(b, p), hours, initialCharge);
+        return BookingMapper.toResponse(b, p, stage(b, p), hours, breakdown(b, ended), initialCharge);
+    }
+
+    /** The pricing rule applied to an ended rental (the settled distance, or the frozen one while a balance is due). */
+    private static RentalBreakdown breakdown(Booking b, LocalDateTime ended) {
+        BigDecimal km = b.getDistanceKm() != null ? b.getDistanceKm() : b.getPendingDistanceKm();
+        if (ended == null || km == null) {
+            return null;
+        }
+        PricingService.ScooterTime time = PricingService.scooterTime(b.getStartTime(), ended);
+        PricingService.Distance d = PricingService.distance(time.days(), km);
+        return new RentalBreakdown(time.days(), time.extraHours(), d.includedKm(), d.excessKm());
     }
 
     private Stage stage(Booking b, Payment p) {

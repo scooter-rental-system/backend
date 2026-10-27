@@ -17,6 +17,9 @@ public final class ScooterDtos {
             @NotBlank String model,
             @NotBlank String plateNumber,
             Integer engineCc,
+            /** LKR per complete day, and per remainder of more than 8 hours. */
+            @NotNull @DecimalMin(value = "0.00", inclusive = false) BigDecimal dailyRate,
+            /** LKR per extra started hour, for a remainder of up to 8 hours. */
             @NotNull @DecimalMin(value = "0.00", inclusive = false) BigDecimal hourlyRate,
             @NotNull @DecimalMin("0.00") BigDecimal perKmRate,
             @NotNull @DecimalMin("0.00") BigDecimal totalMileage,
@@ -31,6 +34,8 @@ public final class ScooterDtos {
             String plateNumber,
             Integer engineCc,
             ScooterStatus status,
+            BigDecimal dailyRate,
+            /** The extra-hour rate. */
             BigDecimal hourlyRate,
             BigDecimal perKmRate,
             BigDecimal totalMileage,

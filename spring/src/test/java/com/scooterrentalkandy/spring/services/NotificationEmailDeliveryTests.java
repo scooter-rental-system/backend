@@ -181,6 +181,7 @@ class NotificationEmailDeliveryTests extends PostgresIntegrationTest {
         scooter.setCode("ND-" + id);
         scooter.setModel("Test Scooter");
         scooter.setPlateNumber("NDP-" + id);
+        scooter.setDailyRate(new BigDecimal("2500.00"));
         scooter.setHourlyRate(new BigDecimal("250.00"));
         scooter.setPerKmRate(new BigDecimal("15.00"));
         Scooter savedScooter = scooters.saveAndFlush(scooter);

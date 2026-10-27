@@ -41,7 +41,11 @@ public class Scooter {
     @Column(nullable = false)
     private ScooterStatus status = ScooterStatus.AVAILABLE;
 
-    /** SDS 2.2: rental charge per hour (LKR). */
+    /** Charge for each complete 24 hours, and for a remainder of more than 8 hours (LKR; decision E2, V16). */
+    @Column(name = "daily_rate", nullable = false, precision = 10, scale = 2)
+    private BigDecimal dailyRate;
+
+    /** The EXTRA-HOUR rate: each started hour of a remainder of up to 8 hours after the whole days (LKR). */
     @Column(name = "hourly_rate", nullable = false, precision = 10, scale = 2)
     private BigDecimal hourlyRate;
 
