@@ -84,6 +84,16 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.UNAUTHORIZED, "Invalid email or password", null);
     }
 
+    /** SDS 6.1: too many failed sign-ins from this address; Retry-After says when to try again. */
+    @ExceptionHandler(LoginRateLimitedException.class)
+    public ResponseEntity<ErrorResponse> handleLoginRateLimited(LoginRateLimitedException ex) {
+        long seconds = ex.retryAfterSeconds();
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(seconds))
+                .body(new ErrorResponse(Instant.now(), HttpStatus.TOO_MANY_REQUESTS.value(),
+                        "Too many failed sign-in attempts. Please try again in " + seconds + " seconds.", null));
+    }
+
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException ex) {
         return build(HttpStatus.FORBIDDEN, "You do not have access to this resource", null);
