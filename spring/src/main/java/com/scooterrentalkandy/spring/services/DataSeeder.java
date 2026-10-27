@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,8 +24,10 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Demo data for local development. Runs only on an empty database. No bookings or payments are seeded: a
  * booking is paid only when the payment provider confirms it, so demo history would be fake financial records.
+ * Never under the prod profile, even if app.seed.enabled is switched on there: the demo accounts have known passwords.
  */
 @Component
+@Profile("!prod")
 @ConditionalOnProperty(name = "app.seed.enabled", havingValue = "true")
 public class DataSeeder implements ApplicationRunner {
 
