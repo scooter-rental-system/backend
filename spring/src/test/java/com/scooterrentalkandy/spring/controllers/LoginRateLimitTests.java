@@ -1,5 +1,6 @@
 package com.scooterrentalkandy.spring.controllers;
 
+import static org.hamcrest.Matchers.matchesRegex;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -32,6 +33,9 @@ import org.springframework.transaction.annotation.Transactional;
 class LoginRateLimitTests extends PostgresIntegrationTest {
 
     private static final String PASSWORD = "secret-pass-1";
+
+    /** A wait of 1 to 60 seconds. */
+    private static final String WAIT_SECONDS = "([1-9]|[1-5][0-9]|60)";
 
     @Autowired
     private MockMvc mvc;
@@ -85,10 +89,11 @@ class LoginRateLimitTests extends PostgresIntegrationTest {
         }
         login(from, user.getEmail(), "wrong-pass-1")
                 .andExpect(status().isTooManyRequests())
-                .andExpect(header().string("Retry-After", "60"))
+                // The wait counts from the first failure, so it is just under a minute once five BCrypt checks ran.
+                .andExpect(header().string("Retry-After", matchesRegex(WAIT_SECONDS)))
                 .andExpect(jsonPath("$.status").value(429))
-                .andExpect(jsonPath("$.message").value(
-                        "Too many failed sign-in attempts. Please try again in 60 seconds."));
+                .andExpect(jsonPath("$.message").value(matchesRegex(
+                        "Too many failed sign-in attempts\\. Please try again in " + WAIT_SECONDS + " seconds\\.")));
     }
 
     @Test
