@@ -51,7 +51,8 @@ public class AuthService {
     @Transactional
     public AuthResponse register(RegisterRequest req) {
         String email = normalizeEmail(req.email());
-        String nic = req.nicNumber().trim();
+        // Old-format NICs end in V or X; stored upper-case so the same number is always the same NIC.
+        String nic = req.nicNumber().trim().toUpperCase(Locale.ROOT);
         if (users.existsByEmailIgnoreCase(email)) {
             throw ApiException.conflict(DUPLICATE_EMAIL);
         }

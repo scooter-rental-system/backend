@@ -16,6 +16,7 @@ import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.repository.NotificationRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.TestNics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -126,8 +127,8 @@ class NotificationDeliveryDisabledTests extends PostgresIntegrationTest {
 
         mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"email\":\"" + address + "\",\"password\":\"secret-pass-1\","
-                                + "\"fullName\":\"Plain Rider\",\"phone\":\"+94 70 000 0000\",\"nicNumber\":\"P"
-                                + unique() + "\"}"))
+                                + "\"fullName\":\"Plain Rider\",\"phone\":\"+94 70 000 0000\",\"nicNumber\":\""
+                                + TestNics.of("P" + unique()) + "\",\"consent\":true}"))
                 .andExpect(status().isCreated());
 
         User user = users.findByEmailIgnoreCase(address).orElseThrow();

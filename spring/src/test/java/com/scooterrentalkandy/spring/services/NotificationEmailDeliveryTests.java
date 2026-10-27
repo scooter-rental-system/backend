@@ -24,6 +24,7 @@ import com.scooterrentalkandy.spring.repository.NotificationRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.TestNics;
 import com.scooterrentalkandy.spring.support.RecordingEmailSender;
 import com.scooterrentalkandy.spring.support.RecordingEmailSender.Sent;
 import org.junit.jupiter.api.AfterEach;
@@ -250,7 +251,7 @@ class NotificationEmailDeliveryTests extends PostgresIntegrationTest {
 
     private static String registration(String emailAddress) {
         return "{\"email\":\"" + emailAddress + "\",\"password\":\"secret-pass-1\",\"fullName\":\"Welcome Rider\","
-                + "\"phone\":\"+94 70 000 0000\",\"nicNumber\":\"W" + unique() + "\"}";
+                + "\"phone\":\"+94 70 000 0000\",\"nicNumber\":\"" + TestNics.of("W" + unique()) + "\",\"consent\":true}";
     }
 
     private User registered(String emailAddress) {

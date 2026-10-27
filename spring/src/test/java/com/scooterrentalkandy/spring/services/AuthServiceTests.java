@@ -68,7 +68,7 @@ class AuthServiceTests {
 
     private static RegisterRequest registration() {
         return new RegisterRequest("  New.Customer@Example.TEST ", "secret-pass-1", "  New Customer ",
-                " +94 70 000 0000 ", "  200012345678 ", "", "  ", "  Sri Lanka ");
+                " +94 70 000 0000 ", "  200012345678 ", "", "  ", "  Sri Lanka ", true);
     }
 
     private User savedUser() {
