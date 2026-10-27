@@ -48,16 +48,19 @@ public class ReportService {
     private final MaintenanceRepository maintenance;
     private final UserRepository users;
     private final Clock clock;
+    private final PricingService pricing;
     private final String currency;
 
     public ReportService(BookingRepository bookings, PaymentRepository payments, ScooterRepository scooters,
-                         MaintenanceRepository maintenance, UserRepository users, Clock clock, AppProperties props) {
+                         MaintenanceRepository maintenance, UserRepository users, Clock clock, PricingService pricing,
+                         AppProperties props) {
         this.bookings = bookings;
         this.payments = payments;
         this.scooters = scooters;
         this.maintenance = maintenance;
         this.users = users;
         this.clock = clock;
+        this.pricing = pricing;
         this.currency = props.billing().currency();
     }
 
@@ -165,21 +168,46 @@ public class ReportService {
                 users.countByRole(Role.USER), revenue30, currency);
     }
 
-    /** All bookings created in the window as CSV (for spreadsheets/accounting). */
+    /** The bookings CSV columns, in order. */
+    static final List<String> CSV_COLUMNS = List.of("booking_reference", "booking_id", "customer_name",
+            "customer_email", "customer_nic", "scooter_code", "scooter_plate", "scooter_model", "status",
+            "rental_start", "rental_end", "daily_rate", "extra_hour_rate", "charged_days", "extra_hours", "time_charge",
+            "total_distance_km", "included_km", "excess_km", "excess_km_rate", "distance_charge", "gear",
+            "gear_charge", "total_amount", "amount_paid", "payment_status", "balance_due", "created_at");
+
+    /**
+     * All bookings created in the window as CSV (for spreadsheets/accounting), one row per booking. The charge
+     * breakdown (days, extra hours, distance allowance, time/distance/gear charges) is filled only for rentals that
+     * have ended, from the shared PricingService with the scooter's and gear's rates (rates are not stored on bookings,
+     * SDS 2.4); total, paid and balance due are the billed amounts. Text cells are quoted and protected against
+     * spreadsheet formula injection; numbers are plain.
+     */
     @Transactional(readOnly = true)
     public String bookingsCsv(LocalDate from, LocalDate to) {
-        StringBuilder sb = new StringBuilder("reference,status,customer,email,scooter,plate,start_time,end_time,"
-                + "billable_hours,distance_km,total_cost,amount_paid,payment_status,balance_due,created_at\n");
+        StringBuilder sb = new StringBuilder(String.join(",", CSV_COLUMNS)).append('\n');
         for (Booking b : bookings.findByCreatedAtBetween(from.atStartOfDay(), to.plusDays(1).atStartOfDay())) {
             Payment p = payments.findByBooking_BookingId(b.getBookingId()).orElse(null);
+            Scooter s = b.getScooter();
+            LocalDateTime ended = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
+            BigDecimal km = b.getDistanceKm() != null ? b.getDistanceKm() : b.getPendingDistanceKm();
+            BigDecimal total = b.getTotalCost() != null ? b.getTotalCost() : b.getPendingTotalCost();
+            PricingService.FinalBill bill = ended == null || km == null ? null
+                    : pricing.finalBill(s, PricingService.selectionsOf(b), b.getStartTime(), ended, km);
+            String gear = b.getGear().stream()
+                    .map(g -> g.getGearItem().getName() + " x" + g.getQuantity())
+                    .collect(Collectors.joining("; "));
             sb.append(String.join(",",
-                            csv(b.getReference()), b.getStatus().name(), csv(b.getUser().getFullName()),
-                            csv(b.getUser().getEmail()), csv(b.getScooter().getCode()),
-                            csv(b.getScooter().getPlateNumber()), b.getStartTime().toString(),
-                            b.getEndTime() == null ? "" : b.getEndTime().toString(),
-                            b.getEndTime() == null ? ""
-                                    : String.valueOf(PricingService.billableHours(b.getStartTime(), b.getEndTime())),
-                            plain(b.getDistanceKm()), plain(b.getTotalCost()),
+                            csv(b.getReference()), csv(String.valueOf(b.getBookingId())),
+                            csv(b.getUser().getFullName()), csv(b.getUser().getEmail()),
+                            csv(b.getUser().getNicNumber()), csv(s.getCode()), csv(s.getPlateNumber()),
+                            csv(s.getModel()), b.getStatus().name(), b.getStartTime().toString(),
+                            ended == null ? "" : ended.toString(), plain(s.getDailyRate()), plain(s.getHourlyRate()),
+                            bill == null ? "" : String.valueOf(bill.days()),
+                            bill == null ? "" : String.valueOf(bill.extraHours()),
+                            bill == null ? "" : plain(bill.timeCost()), plain(km == null ? null : km.setScale(2)),
+                            bill == null ? "" : plain(bill.includedKm()), bill == null ? "" : plain(bill.excessKm()),
+                            plain(s.getPerKmRate()), bill == null ? "" : plain(bill.distanceCost()), csv(gear),
+                            bill == null ? "" : plain(bill.gearCost()), plain(total),
                             p == null ? "" : plain(p.getAmount()), p == null ? "" : p.getStatus().name(),
                             p == null ? "" : plain(p.getBalanceDue()), b.getCreatedAt().toString()))
                     .append('\n');
@@ -195,12 +223,15 @@ public class ReportService {
         return v == null ? "" : v.toPlainString();
     }
 
-    private static String csv(String v) {
+    /**
+     * One quoted CSV cell (RFC 4180): quotes are doubled, and commas and line breaks stay inside the quotes. A value
+     * that a spreadsheet would run as a formula (starting with = + - @, tab or carriage return) is prefixed with '.
+     */
+    static String csv(String v) {
         if (v == null) {
             return "";
         }
-        // Neutralise spreadsheet formula injection and quote embedded commas/quotes.
-        String s = v.matches("^[=+\\-@].*") ? "'" + v : v;
+        String s = v.matches("(?s)^[=+\\-@\\t\\r].*") ? "'" + v : v;
         return "\"" + s.replace("\"", "\"\"") + "\"";
     }
 }
