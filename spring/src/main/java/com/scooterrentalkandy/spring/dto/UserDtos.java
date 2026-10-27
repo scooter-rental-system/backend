@@ -41,6 +41,15 @@ public final class UserDtos {
             @NotNull(message = CONSENT_MESSAGE) @AssertTrue(message = CONSENT_MESSAGE) Boolean consent) {
     }
 
+    /**
+     * The signed-in user's own password change. The current password is required; the new one follows the same rule
+     * as registration (8 to 72 characters). Confirmation is checked by the form.
+     */
+    public record ChangePasswordRequest(
+            @NotBlank String currentPassword,
+            @NotBlank @Size(min = 8, max = 72, message = "must be between 8 and 72 characters") String newPassword) {
+    }
+
     public record LoginRequest(@NotBlank @Email String email, @NotBlank String password) {
     }
 

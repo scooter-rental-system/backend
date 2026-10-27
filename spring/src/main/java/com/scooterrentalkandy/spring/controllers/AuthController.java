@@ -3,6 +3,7 @@ package com.scooterrentalkandy.spring.controllers;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import com.scooterrentalkandy.spring.dto.UserDtos.AuthResponse;
+import com.scooterrentalkandy.spring.dto.UserDtos.ChangePasswordRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.LoginRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.RegisterRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.UpdateProfileRequest;
@@ -65,5 +66,12 @@ public class AuthController {
     @PutMapping("/api/me")
     public UserResponse updateMe(@CurrentUser AuthUser user, @Valid @RequestBody UpdateProfileRequest req) {
         return auth.updateProfile(user.id(), req);
+    }
+
+    /** Any signed-in user (customer or admin) changes their own password; 204 on success. */
+    @PutMapping("/api/me/password")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void changePassword(@CurrentUser AuthUser user, @Valid @RequestBody ChangePasswordRequest req) {
+        auth.changePassword(user.id(), req);
     }
 }
