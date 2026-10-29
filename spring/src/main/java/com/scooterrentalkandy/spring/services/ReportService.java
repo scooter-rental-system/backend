@@ -168,12 +168,20 @@ public class ReportService {
                 users.countByRole(Role.USER), revenue30, currency);
     }
 
-    /** The bookings CSV columns, in order. */
-    static final List<String> CSV_COLUMNS = List.of("booking_reference", "booking_id", "customer_name",
-            "customer_email", "customer_nic", "scooter_code", "scooter_plate", "scooter_model", "status",
-            "rental_start", "rental_end", "daily_rate", "extra_hour_rate", "charged_days", "extra_hours", "time_charge",
-            "total_distance_km", "included_km", "excess_km", "excess_km_rate", "distance_charge", "gear",
-            "gear_charge", "total_amount", "amount_paid", "payment_status", "balance_due", "created_at");
+    /** The bookings CSV headings, in order (human-readable, with units, for spreadsheets). */
+    static final List<String> CSV_COLUMNS = List.of("Booking Reference", "Booking ID", "Customer Name",
+            "Customer Email", "Customer NIC", "Scooter Code", "Scooter Plate", "Scooter Model", "Status",
+            "Rental Start", "Rental End", "Daily Rate (LKR)", "Extra Hour Rate (LKR)", "Charged Days", "Extra Hours",
+            "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)", "Excess Distance (km)",
+            "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)", "Total Amount (LKR)",
+            "Amount Paid (LKR)", "Payment Status", "Balance Due (LKR)", "Created At");
+
+    /** Spreadsheet-friendly local date and time (Sri Lanka time, as stored). */
+    private static final java.time.format.DateTimeFormatter CSV_TIME =
+            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+
+    /** RFC 4180 record separator. */
+    private static final String CSV_EOL = "\r\n";
 
     /**
      * All bookings created in the window as CSV (for spreadsheets/accounting), one row per booking. The charge
@@ -184,8 +192,11 @@ public class ReportService {
      */
     @Transactional(readOnly = true)
     public String bookingsCsv(LocalDate from, LocalDate to) {
-        StringBuilder sb = new StringBuilder(String.join(",", CSV_COLUMNS)).append('\n');
-        for (Booking b : bookings.findByCreatedAtBetween(from.atStartOfDay(), to.plusDays(1).atStartOfDay())) {
+        StringBuilder sb = new StringBuilder(CSV_COLUMNS.stream().map(ReportService::csv).collect(Collectors.joining(",")))
+                .append(CSV_EOL);
+        List<Booking> rows = bookings.findByCreatedAtBetween(from.atStartOfDay(), to.plusDays(1).atStartOfDay()).stream()
+                .sorted(Comparator.comparing(Booking::getCreatedAt)).toList();
+        for (Booking b : rows) {
             Payment p = payments.findByBooking_BookingId(b.getBookingId()).orElse(null);
             Scooter s = b.getScooter();
             LocalDateTime ended = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
@@ -200,8 +211,9 @@ public class ReportService {
                             csv(b.getReference()), csv(String.valueOf(b.getBookingId())),
                             csv(b.getUser().getFullName()), csv(b.getUser().getEmail()),
                             csv(b.getUser().getNicNumber()), csv(s.getCode()), csv(s.getPlateNumber()),
-                            csv(s.getModel()), b.getStatus().name(), b.getStartTime().toString(),
-                            ended == null ? "" : ended.toString(), plain(s.getDailyRate()), plain(s.getHourlyRate()),
+                            csv(s.getModel()), b.getStatus().name(), b.getStartTime().format(CSV_TIME),
+                            ended == null ? "" : ended.format(CSV_TIME), plain(s.getDailyRate()),
+                            plain(s.getHourlyRate()),
                             bill == null ? "" : String.valueOf(bill.days()),
                             bill == null ? "" : String.valueOf(bill.extraHours()),
                             bill == null ? "" : plain(bill.timeCost()), plain(km == null ? null : km.setScale(2)),
@@ -209,8 +221,8 @@ public class ReportService {
                             plain(s.getPerKmRate()), bill == null ? "" : plain(bill.distanceCost()), csv(gear),
                             bill == null ? "" : plain(bill.gearCost()), plain(total),
                             p == null ? "" : plain(p.getAmount()), p == null ? "" : p.getStatus().name(),
-                            p == null ? "" : plain(p.getBalanceDue()), b.getCreatedAt().toString()))
-                    .append('\n');
+                            p == null ? "" : plain(p.getBalanceDue()), b.getCreatedAt().format(CSV_TIME)))
+                    .append(CSV_EOL);
         }
         return sb.toString();
     }

@@ -2,12 +2,14 @@ package com.scooterrentalkandy.spring.services;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.entity.Booking;
@@ -32,7 +34,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
-/** The admin bookings CSV: the agreed columns, real values only, RFC 4180 quoting and formula-injection protection. */
+/**
+ * The admin bookings CSV: human-readable headings, real values only, RFC 4180 records (CRLF, quoted cells) with
+ * formula-injection protection, and a UTF-8 download with a byte-order mark for Excel.
+ */
 @AutoConfigureMockMvc
 @Transactional
 class BookingsCsvTests extends PostgresIntegrationTest {
@@ -101,7 +106,7 @@ class BookingsCsvTests extends PostgresIntegrationTest {
 
     /** Splits one CSV record into its cells (quoted cells may contain commas, quotes and line breaks). */
     private static List<String> cells(String record) {
-        List<String> out = new java.util.ArrayList<>();
+        List<String> out = new ArrayList<>();
         StringBuilder cell = new StringBuilder();
         boolean quoted = false;
         for (int i = 0; i < record.length(); i++) {
@@ -128,21 +133,30 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         return out;
     }
 
-    private static String row(String csv, String reference) {
-        int start = csv.indexOf("\"" + reference + "\"");
-        assertThat(start).as("row for " + reference).isNotNegative();
-        // A record ends at the first newline outside quotes.
+    /** The record that starts at {@code start}: up to the first CRLF outside quotes. */
+    private static String recordAt(String csv, int start) {
         boolean quoted = false;
-        int i = start;
-        for (; i < csv.length(); i++) {
+        for (int i = start; i < csv.length(); i++) {
             char c = csv.charAt(i);
             if (c == '"') {
                 quoted = !quoted;
-            } else if (c == '\n' && !quoted) {
-                break;
+            } else if (c == '\r' && !quoted && i + 1 < csv.length() && csv.charAt(i + 1) == '\n') {
+                return csv.substring(start, i);
             }
         }
-        return csv.substring(start, i);
+        return csv.substring(start);
+    }
+
+    private static List<String> row(String csv, String reference) {
+        int start = csv.indexOf("\"" + reference + "\"");
+        assertThat(start).as("row for " + reference).isNotNegative();
+        return cells(recordAt(csv, start));
+    }
+
+    private static String value(List<String> cells, String heading) {
+        int i = ReportService.CSV_COLUMNS.indexOf(heading);
+        assertThat(i).as(heading).isNotNegative();
+        return cells.get(i);
     }
 
     private String exportToday() {
@@ -151,12 +165,23 @@ class BookingsCsvTests extends PostgresIntegrationTest {
     }
 
     @Test
-    void hasTheAgreedHeader() {
-        String header = exportToday().lines().findFirst().orElseThrow();
-        assertThat(Arrays.asList(header.split(","))).containsExactlyElementsOf(ReportService.CSV_COLUMNS);
-        assertThat(ReportService.CSV_COLUMNS).contains("customer_nic", "daily_rate", "extra_hour_rate", "charged_days",
-                "extra_hours", "time_charge", "included_km", "excess_km", "excess_km_rate", "distance_charge", "gear",
-                "gear_charge", "total_amount", "payment_status");
+    void hasHumanReadableHeadingsInTheAgreedOrder() {
+        assertThat(cells(recordAt(exportToday(), 0))).containsExactlyElementsOf(ReportService.CSV_COLUMNS);
+        assertThat(ReportService.CSV_COLUMNS).containsExactly("Booking Reference", "Booking ID", "Customer Name",
+                "Customer Email", "Customer NIC", "Scooter Code", "Scooter Plate", "Scooter Model", "Status",
+                "Rental Start", "Rental End", "Daily Rate (LKR)", "Extra Hour Rate (LKR)", "Charged Days",
+                "Extra Hours", "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)",
+                "Excess Distance (km)", "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)",
+                "Total Amount (LKR)", "Amount Paid (LKR)", "Payment Status", "Balance Due (LKR)", "Created At");
+    }
+
+    @Test
+    void endsEveryRecordWithCrlf() {
+        Booking b = booking(saveUser("Line Ending", Role.USER), saveScooter(), BookingStatus.PENDING);
+        bookings.saveAndFlush(b);
+        String csv = exportToday();
+        assertThat(csv).startsWith("\"Booking Reference\",").contains("\"Created At\"\r\n").endsWith("\r\n");
+        assertThat(csv.replace("\r\n", "")).doesNotContain("\n");
     }
 
     @Test
@@ -181,37 +206,41 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         b.addGear(line);
         bookings.saveAndFlush(b);
 
-        List<String> c = cells(row(exportToday(), b.getReference()));
+        List<String> c = row(exportToday(), b.getReference());
         assertThat(c).hasSize(ReportService.CSV_COLUMNS.size());
-        assertThat(value(c, "customer_name")).isEqualTo("Nimal Perera");
-        assertThat(value(c, "customer_nic")).isEqualTo(customer.getNicNumber());
-        assertThat(value(c, "scooter_model")).isEqualTo("Honda Dio");
-        assertThat(value(c, "status")).isEqualTo("COMPLETED");
-        assertThat(value(c, "daily_rate")).isEqualTo("2500.00");
-        assertThat(value(c, "extra_hour_rate")).isEqualTo("250.00");
-        assertThat(value(c, "charged_days")).isEqualTo("1");
-        assertThat(value(c, "extra_hours")).isEqualTo("3");
-        assertThat(value(c, "time_charge")).isEqualTo("3250.00");
-        assertThat(value(c, "total_distance_km")).isEqualTo("150.00");
-        assertThat(value(c, "included_km")).isEqualTo("120.00");
-        assertThat(value(c, "excess_km")).isEqualTo("30.00");
-        assertThat(value(c, "excess_km_rate")).isEqualTo("15.00");
-        assertThat(value(c, "distance_charge")).isEqualTo("450.00");
-        assertThat(value(c, "gear")).isEqualTo("2-person tent x1");
-        assertThat(value(c, "gear_charge")).isEqualTo("1500.00");
-        assertThat(value(c, "total_amount")).isEqualTo("5200.00");
+        assertThat(value(c, "Customer Name")).isEqualTo("Nimal Perera");
+        assertThat(value(c, "Customer NIC")).isEqualTo(customer.getNicNumber());
+        assertThat(value(c, "Scooter Model")).isEqualTo("Honda Dio");
+        assertThat(value(c, "Status")).isEqualTo("COMPLETED");
+        assertThat(value(c, "Rental Start")).isEqualTo("2026-10-01 09:00");
+        assertThat(value(c, "Rental End")).isEqualTo("2026-10-02 12:00");
+        assertThat(value(c, "Daily Rate (LKR)")).isEqualTo("2500.00");
+        assertThat(value(c, "Extra Hour Rate (LKR)")).isEqualTo("250.00");
+        assertThat(value(c, "Charged Days")).isEqualTo("1");
+        assertThat(value(c, "Extra Hours")).isEqualTo("3");
+        assertThat(value(c, "Time Charge (LKR)")).isEqualTo("3250.00");
+        assertThat(value(c, "Total Distance (km)")).isEqualTo("150.00");
+        assertThat(value(c, "Included Distance (km)")).isEqualTo("120.00");
+        assertThat(value(c, "Excess Distance (km)")).isEqualTo("30.00");
+        assertThat(value(c, "Excess Rate (LKR/km)")).isEqualTo("15.00");
+        assertThat(value(c, "Distance Charge (LKR)")).isEqualTo("450.00");
+        assertThat(value(c, "Gear")).isEqualTo("2-person tent x1");
+        assertThat(value(c, "Gear Charge (LKR)")).isEqualTo("1500.00");
+        assertThat(value(c, "Total Amount (LKR)")).isEqualTo("5200.00");
+        assertThat(value(c, "Created At")).matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}");
     }
 
     @Test
     void aRentalThatHasNotEndedLeavesTheChargesEmpty() {
         Booking b = booking(saveUser("Open Rider", Role.USER), saveScooter(), BookingStatus.PENDING);
         bookings.saveAndFlush(b);
-        List<String> c = cells(row(exportToday(), b.getReference()));
-        for (String column : List.of("rental_end", "charged_days", "extra_hours", "time_charge", "included_km",
-                "excess_km", "distance_charge", "gear_charge", "total_amount", "amount_paid", "payment_status")) {
-            assertThat(value(c, column)).as(column).isEmpty();
+        List<String> c = row(exportToday(), b.getReference());
+        for (String heading : List.of("Rental End", "Charged Days", "Extra Hours", "Time Charge (LKR)",
+                "Included Distance (km)", "Excess Distance (km)", "Distance Charge (LKR)", "Gear Charge (LKR)",
+                "Total Amount (LKR)", "Amount Paid (LKR)", "Payment Status")) {
+            assertThat(value(c, heading)).as(heading).isEmpty();
         }
-        assertThat(value(c, "daily_rate")).isEqualTo("2500.00");
+        assertThat(value(c, "Daily Rate (LKR)")).isEqualTo("2500.00");
     }
 
     @Test
@@ -225,11 +254,30 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         assertThat(ReportService.csv("\tTAB")).startsWith("\"'\t");
         assertThat(ReportService.csv(null)).isEmpty();
 
-        Booking b = booking(saveUser("=cmd, \"quoted\"\nname", Role.USER), saveScooter(), BookingStatus.PENDING);
+        Booking b = booking(saveUser("=cmd, \"quoted\"\r\nname", Role.USER), saveScooter(), BookingStatus.PENDING);
         bookings.saveAndFlush(b);
-        List<String> c = cells(row(exportToday(), b.getReference()));
+        List<String> c = row(exportToday(), b.getReference());
         assertThat(c).hasSize(ReportService.CSV_COLUMNS.size());
-        assertThat(value(c, "customer_name")).isEqualTo("'=cmd, \"quoted\"\nname");
+        assertThat(value(c, "Customer Name")).isEqualTo("'=cmd, \"quoted\"\r\nname");
+    }
+
+    @Test
+    void downloadsAsUtf8CsvWithAByteOrderMarkAndAUsefulName() throws Exception {
+        User admin = saveUser("Csv Admin", Role.ADMIN);
+        byte[] body = mvc.perform(get("/api/admin/reports/bookings.csv?from=2026-10-27&to=2026-10-27")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwt.issue(admin)))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CONTENT_TYPE, "text/csv;charset=UTF-8"))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"bookings-2026-10-27.csv\""))
+                .andReturn().getResponse().getContentAsByteArray();
+        assertThat(body).startsWith((byte) 0xEF, (byte) 0xBB, (byte) 0xBF);
+        assertThat(new String(body, StandardCharsets.UTF_8)).startsWith("﻿\"Booking Reference\",");
+
+        mvc.perform(get("/api/admin/reports/bookings.csv?from=2026-10-01&to=2026-10-31")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwt.issue(admin)))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"bookings-2026-10-01-to-2026-10-31.csv\""));
     }
 
     @Test
@@ -238,9 +286,5 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         mvc.perform(get("/api/admin/reports/bookings.csv?from=2026-10-01&to=2026-10-31")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwt.issue(customer)))
                 .andExpect(status().isForbidden());
-    }
-
-    private static String value(List<String> cells, String column) {
-        return cells.get(ReportService.CSV_COLUMNS.indexOf(column));
     }
 }
