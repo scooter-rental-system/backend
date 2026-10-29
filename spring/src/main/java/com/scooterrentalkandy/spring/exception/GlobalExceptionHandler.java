@@ -77,10 +77,11 @@ public class GlobalExceptionHandler {
     }
 
     /** Unmapped paths (including endpoints that no longer exist) are 404, not a server error. */
-    /** An upload above the configured limits (repair photos: 5 MB each, at most 3). */
+    /** An upload above the configured limits (images: 5 MB each; at most 3 repair photos). */
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ErrorResponse> handleUploadTooLarge(MaxUploadSizeExceededException ex) {
-        return build(HttpStatus.CONTENT_TOO_LARGE, "Each photo must be 5 MB or smaller, with at most 3 photos.", null);
+        return build(HttpStatus.CONTENT_TOO_LARGE, "Each image must be 5 MB or smaller (at most 3 repair photos).",
+                null);
     }
 
     @ExceptionHandler({MultipartException.class, MissingServletRequestPartException.class})

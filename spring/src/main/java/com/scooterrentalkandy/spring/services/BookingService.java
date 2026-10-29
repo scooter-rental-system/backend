@@ -73,6 +73,7 @@ public class BookingService {
     private final ContractService contracts;
     private final PaymentService payments;
     private final CashPaymentService cash;
+    private final ManualPaymentService transfers;
     private final BillingService billing;
     private final GpsService gps;
     private final MaintenanceService maintenance;
@@ -85,7 +86,8 @@ public class BookingService {
 
     public BookingService(BookingRepository bookings, ScooterRepository scooters, UserRepository users,
                           GearService gearService, PricingService pricing, ContractService contracts, PaymentService payments,
-                          CashPaymentService cash, BillingService billing, GpsService gps, MaintenanceService maintenance,
+                          CashPaymentService cash, ManualPaymentService transfers, BillingService billing, GpsService gps,
+                          MaintenanceService maintenance,
                           RepairService repairs, NotificationService notifications, UnpaidBookingExpiry unpaidExpiry,
                           PlatformTransactionManager transactionManager, Clock clock, AppProperties props) {
         this.bookings = bookings;
@@ -96,6 +98,7 @@ public class BookingService {
         this.contracts = contracts;
         this.payments = payments;
         this.cash = cash;
+        this.transfers = transfers;
         this.billing = billing;
         this.gps = gps;
         this.maintenance = maintenance;
@@ -205,10 +208,16 @@ public class BookingService {
         Payment paid = payments.find(b.getBookingId()).orElse(null);
         BigDecimal amount = paid == null ? BigDecimal.ZERO : paid.getAmount();
         boolean inCash = paid != null && paid.getMethod() == PaymentMethod.CASH;
+        boolean byTransfer = paid != null && paid.getMethod().isTransfer();
         notifications.notify(b.getUser(), "Booking confirmed: " + b.getReference(), inCash
                 ? "Your cash payment of " + currency + " " + amount + " was confirmed. Your " + s.getModel() + " ("
                         + s.getPlateNumber() + ") is yours from " + b.getStartTime().format(WHEN) + "; the rest is "
                         + "billed by the hour and kilometre when you end the rental and paid in cash at the counter."
+                : byTransfer
+                ? "Your " + ManualPaymentService.label(paid.getMethod()) + " of " + currency + " " + amount
+                        + " was approved. Your " + s.getModel() + " (" + s.getPlateNumber() + ") is yours from "
+                        + b.getStartTime().format(WHEN) + "; the rest is billed by the hour and kilometre when you end "
+                        + "the rental."
                 : "Your " + s.getModel() + " (" + s.getPlateNumber() + ") is yours from " + b.getStartTime().format(WHEN)
                         + ". You were charged " + currency + " " + amount + " now; the rest is billed by the hour and "
                         + "kilometre when you end the rental.");
@@ -249,8 +258,9 @@ public class BookingService {
      * refunds an excess) and completes the booking. If the charge is declined the booking stays ACTIVE with the
      * balance due (402) and calling this again retries the same amount. If the provider cannot be reached, only
      * the second transaction rolls back and a retry repeats the charge with the same idempotency key. A rental paid in
-     * cash is not charged: the balance due (or the cash owed back) waits on the payment for an admin to confirm at the
-     * counter, and the booking stays ACTIVE until then.
+     * cash, by QR payment or by bank transfer is not charged: the balance due (or the refund owed) waits on the
+     * payment until an admin confirms the cash, approves a transfer receipt or records the refund, and the booking
+     * stays ACTIVE until then.
      */
     public BookingResponse complete(UUID bookingId, AuthUser user) {
         transaction.executeWithoutResult(status -> freezeSettlement(bookingId, user));
@@ -303,8 +313,8 @@ public class BookingService {
             throw ApiException.conflict("Only an active rental can be ended (status " + b.getStatus() + ")");
         }
         Payment p = payments.find(b.getBookingId()).orElseThrow(() -> new IllegalStateException("No payment"));
-        if (p.getMethod() == PaymentMethod.CASH) {
-            // Cash: the balance (or the cash owed back) waits at the counter for an admin to confirm it.
+        if (p.getMethod().isManual()) {
+            // Cash, QR payment or bank transfer: the balance (or the refund owed) waits for an admin to confirm it.
             if (cash.settleAtEnd(b)) {
                 finishRental(b);
             }
@@ -358,6 +368,7 @@ public class BookingService {
         switch (b.getStatus()) {
             case PENDING -> {
                 markCancelled(b);
+                transfers.expirePendingReceipt(b, false);
                 payments.cancelOpenIntent(b);
             }
             case ACTIVE -> {
@@ -366,9 +377,10 @@ public class BookingService {
                     throw ApiException.conflict("This rental has started and can no longer be cancelled; end it instead");
                 }
                 markCancelled(b);
-                boolean inCash = payments.find(b.getBookingId()).map(p -> p.getMethod() == PaymentMethod.CASH)
-                        .orElse(false);
-                Payment refund = inCash ? cash.refundDueOnCancellation(b)
+                PaymentMethod method = payments.find(b.getBookingId()).map(Payment::getMethod).orElse(null);
+                boolean inCash = method == PaymentMethod.CASH;
+                boolean byTransfer = method != null && method.isTransfer();
+                Payment refund = inCash || byTransfer ? cash.refundDueOnCancellation(b)
                         : payments.refundInFull(b, "Booking " + b.getReference() + " cancelled");
                 b.getScooter().setStatus(ScooterStatus.AVAILABLE);
                 billing.voidEarlierRentalInvoice(b.getBookingId());
@@ -376,6 +388,9 @@ public class BookingService {
                 notifications.notify(b.getUser(), "Booking cancelled: " + b.getReference(), inCash
                         ? "Your booking has been cancelled. A cash refund of " + currency + " " + refunded
                                 + " is due to you at the rental counter."
+                        : byTransfer
+                        ? "Your booking has been cancelled. A refund of " + currency + " " + refunded
+                                + " is due to you; our team will send it and let you know."
                         : "Your booking has been cancelled. A refund of " + currency + " " + refunded
                                 + " has been issued.");
                 notifications.notifyAdmins("Booking cancelled " + b.getReference(),
@@ -488,7 +503,8 @@ public class BookingService {
         BigDecimal initialCharge = pricing.initialCharge(b.getScooter(), PricingService.selectionsOf(b)).total();
         LocalDateTime ended = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
         Long hours = ended == null ? null : PricingService.billableHours(b.getStartTime(), ended);
-        return BookingMapper.toResponse(b, p, stage(b, p), hours, breakdown(b, ended), initialCharge);
+        return BookingMapper.toResponse(b, p, transfers.forPayment(p), stage(b, p), hours, breakdown(b, ended),
+                initialCharge);
     }
 
     /** The pricing rule applied to an ended rental (the settled distance, or the frozen one while a balance is due). */

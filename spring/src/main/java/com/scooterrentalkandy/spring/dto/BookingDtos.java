@@ -77,8 +77,10 @@ public final class BookingDtos {
     }
 
     /**
-     * {@code method}: CARD (payment provider) or CASH (received at the rental counter and recorded by an admin).
-     * {@code refundDue}: CASH only, cash still to hand back to the customer; null when none.
+     * {@code method}: CARD (payment provider), CASH (received at the rental counter and recorded by an admin), or
+     * QR_TRANSFER / BANK_TRANSFER (transferred by the customer and approved by an admin from the receipt).
+     * {@code refundDue}: cash, QR or bank transfer only, money still owed back to the customer; null when none.
+     * {@code receipts}: the transfer receipts the customer uploaded, oldest first (empty for card and cash).
      */
     public record PaymentSummary(
             PaymentStatus status,
@@ -88,7 +90,8 @@ public final class BookingDtos {
             String failureReason,
             LocalDateTime paidAt,
             PaymentMethod method,
-            BigDecimal refundDue) {
+            BigDecimal refundDue,
+            List<ManualPaymentDtos.ReceiptSummary> receipts) {
     }
 
     /**

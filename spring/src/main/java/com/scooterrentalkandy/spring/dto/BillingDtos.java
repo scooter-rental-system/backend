@@ -38,16 +38,25 @@ public final class BillingDtos {
             BigDecimal total,
             LocalDateTime issuedAt,
             List<InvoiceLineResponse> lines,
-            /** How the booking is paid: CARD or CASH; null when there is no payment (a viva demo rental). */
+            /**
+             * How the booking was first paid: CARD, CASH, QR_TRANSFER or BANK_TRANSFER; null when there is no payment
+             * (a viva demo rental).
+             */
             PaymentMethod paymentMethod,
             /** FINAL invoice paid in cash: the cash recorded as received at the counter, and as handed back. */
             BigDecimal cashReceived,
             BigDecimal cashRefunded,
-            /** FINAL invoice paid in cash: cash still to hand back to the customer; null when none. */
-            BigDecimal refundDue) {
+            /** FINAL invoice paid in cash or by QR or bank transfer: money still owed back; null when none. */
+            BigDecimal refundDue,
+            /**
+             * FINAL invoice paid in cash or by QR or bank transfer: everything recorded or approved as received, and
+             * everything refunded so far (a refund still due is not included).
+             */
+            BigDecimal amountReceived,
+            BigDecimal amountRefunded) {
     }
 
-    /** The cash an admin recorded as received and as handed back for a booking. */
+    /** What an admin recorded or approved as received, and as refunded, for a booking paid outside the provider. */
     public record CashTotals(BigDecimal received, BigDecimal refunded) {
     }
 }

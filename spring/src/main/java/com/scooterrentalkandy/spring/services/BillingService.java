@@ -16,7 +16,6 @@ import com.scooterrentalkandy.spring.entity.Booking;
 import com.scooterrentalkandy.spring.entity.Invoice;
 import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.PaymentTransaction;
-import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.repository.InvoiceRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
@@ -121,9 +120,12 @@ public class BillingService {
                 }).toList();
     }
 
-    /** For a cash payment: the cash recorded as received (initial and balance) and as handed back. */
+    /**
+     * For a payment at the counter or by transfer (cash, QR payment, bank transfer): what an admin recorded or
+     * approved as received (initial and balance) and as refunded.
+     */
     private CashTotals cashTotals(Payment payment) {
-        if (payment == null || payment.getMethod() != PaymentMethod.CASH) {
+        if (payment == null || !payment.getMethod().isManual()) {
             return null;
         }
         BigDecimal received = BigDecimal.ZERO.setScale(2);

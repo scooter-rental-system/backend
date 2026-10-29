@@ -26,6 +26,7 @@ import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.PaymentTransaction;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.PaymentProviderEventRepository;
+import com.scooterrentalkandy.spring.repository.PaymentReceiptRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
 import com.scooterrentalkandy.spring.security.AuthUser;
@@ -50,8 +51,9 @@ import org.springframework.transaction.annotation.Transactional;
  * If that fails, the balance stays due on the row and can be paid online.
  *
  * <p>The provider is optional: without one, payment operations answer 503 and nothing is simulated. Cash at the
- * rental counter is separate ({@link CashPaymentService}): it never reaches the provider, and a CASH payment is
- * never given to the card operations here.
+ * rental counter ({@link CashPaymentService}) and QR payments and bank transfers ({@link ManualPaymentService}) are
+ * separate: they never reach the provider, and a payment by one of those methods is never given to the card
+ * operations here.
  *
  * <p>Safety rules:
  * <ul>
@@ -74,6 +76,7 @@ public class PaymentService {
             Event.CHARGE_REFUNDED);
 
     private final PaymentRepository payments;
+    private final PaymentReceiptRepository receipts;
     private final PaymentTransactionRepository transactions;
     private final PaymentProviderEventRepository providerEvents;
     private final BookingRepository bookings;
@@ -84,11 +87,13 @@ public class PaymentService {
     private final String currency;
 
     public PaymentService(PaymentRepository payments, PaymentTransactionRepository transactions,
+                          PaymentReceiptRepository receipts,
                           PaymentProviderEventRepository providerEvents, BookingRepository bookings,
                           ObjectProvider<PaymentGateway> gateways, PricingService pricing,
                           ApplicationEventPublisher events, Clock clock, AppProperties props) {
         this.payments = payments;
         this.transactions = transactions;
+        this.receipts = receipts;
         this.providerEvents = providerEvents;
         this.bookings = bookings;
         this.gateways = gateways;
@@ -138,11 +143,15 @@ public class PaymentService {
             p.setProvider(gateway.name());
         } else if (p.getStatus() == PaymentStatus.SUCCESS || p.getStatus() == PaymentStatus.REFUNDED) {
             throw ApiException.conflict("This booking has already been paid");
+        } else if (receipts.findPendingByBookingId(bookingId).isPresent()) {
+            // The customer may already have transferred the money: an admin verifies that first.
+            throw ApiException.conflict("A payment receipt for this booking is waiting for verification");
         } else if (p.getStripePaymentId() != null) {
             replace(gateway, p, p.getStripePaymentId());
         }
-        if (p.getMethod() == PaymentMethod.CASH) {
-            // The customer chose cash earlier but pays by card after all; no cash was recorded (status PENDING).
+        if (p.getMethod().isManual()) {
+            // The customer chose cash, QR payment or bank transfer earlier but pays by card after all; nothing was
+            // recorded as received (status PENDING).
             p.setMethod(PaymentMethod.CARD);
             p.setProvider(gateway.name());
         }
@@ -171,6 +180,10 @@ public class PaymentService {
         }
         if (p.getMethod() == PaymentMethod.CASH) {
             throw ApiException.conflict("This booking is paid in cash: pay the balance at the rental counter");
+        }
+        if (p.getMethod().isTransfer()) {
+            throw ApiException.conflict("This booking is paid by transfer: transfer the balance and upload the "
+                    + "receipt, or pay it at the rental counter");
         }
         PaymentGateway gateway = gateway();
         boolean chargeProcessing = transactions.findByPayment_PaymentIdAndStatus(p.getPaymentId(),
@@ -202,13 +215,19 @@ public class PaymentService {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public void closeCardAttempt(Payment p) {
-        if (p.getMethod() == PaymentMethod.CASH || p.getStripePaymentId() == null) {
+        closeCardAttempt(p, "Replaced by a cash payment");
+    }
+
+    /** As {@link #closeCardAttempt(Payment)}, before switching to another manual method; {@code reason} says which. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void closeCardAttempt(Payment p, String reason) {
+        if (p.getMethod().isManual() || p.getStripePaymentId() == null) {
             return;
         }
         PaymentGateway gateway = gateways.getIfAvailable();
         if (gateway == null) {
             log.warn("No payment provider configured; intent {} closed locally only", p.getStripePaymentId());
-            settle(p, p.getStripePaymentId(), PaymentTransaction.Status.FAILED, "Replaced by a cash payment");
+            settle(p, p.getStripePaymentId(), PaymentTransaction.Status.FAILED, reason);
         } else {
             replace(gateway, p, p.getStripePaymentId());
         }
@@ -550,6 +569,10 @@ public class PaymentService {
                 // No cash was received and no provider is involved: the pending cash payment just lapses.
                 p.setStatus(PaymentStatus.FAILED);
                 p.setFailureReason("Booking cancelled before the cash payment was received");
+            } else if (p.getStatus() == PaymentStatus.PENDING && p.getMethod().isTransfer()) {
+                // No transfer was approved and no provider is involved (a waiting receipt is expired by the caller).
+                p.setStatus(PaymentStatus.FAILED);
+                p.setFailureReason("Booking cancelled before the transfer was verified");
             } else if (p.getStatus() == PaymentStatus.PENDING) {
                 PaymentGateway gateway = gateways.getIfAvailable();
                 if (gateway == null) {

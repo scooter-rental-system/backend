@@ -6,6 +6,7 @@ import com.scooterrentalkandy.spring.dto.BillingDtos.InvoiceLineResponse;
 import com.scooterrentalkandy.spring.dto.BillingDtos.InvoiceResponse;
 import com.scooterrentalkandy.spring.entity.Invoice;
 import com.scooterrentalkandy.spring.entity.Payment;
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 
 public final class InvoiceMapper {
 
@@ -14,10 +15,12 @@ public final class InvoiceMapper {
 
     /**
      * {@code payment}: the booking's payment, for its status and the unpaid balance of a FINAL invoice.
-     * {@code cash}: for a cash payment, the cash recorded as received and handed back; otherwise null.
+     * {@code cash}: for a payment in cash, by QR payment or by bank transfer, the amounts recorded as received and
+     * refunded; otherwise null. The cash fields stay for cash payments only.
      */
     public static InvoiceResponse toResponse(Invoice i, boolean withLines, Payment payment, CashTotals cash) {
-        boolean finalCash = cash != null && i.getKind() == Invoice.Kind.FINAL;
+        boolean finalManual = cash != null && i.getKind() == Invoice.Kind.FINAL;
+        boolean finalCash = finalManual && payment.getMethod() == PaymentMethod.CASH;
         var b = i.getBooking();
         List<InvoiceLineResponse> lines = withLines
                 ? i.getLines().stream()
@@ -31,6 +34,7 @@ public final class InvoiceMapper {
                 payment != null && i.getKind() == Invoice.Kind.FINAL ? payment.getBalanceDue() : null,
                 i.getCurrency(), i.getSubtotal(), i.getTax(), i.getTotal(), i.getIssuedAt(), lines,
                 payment == null ? null : payment.getMethod(), finalCash ? cash.received() : null,
-                finalCash ? cash.refunded() : null, finalCash ? payment.getRefundDue() : null);
+                finalCash ? cash.refunded() : null, finalManual ? payment.getRefundDue() : null,
+                finalManual ? cash.received() : null, finalManual ? cash.refunded() : null);
     }
 }

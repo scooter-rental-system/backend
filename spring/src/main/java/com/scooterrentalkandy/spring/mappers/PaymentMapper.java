@@ -28,6 +28,7 @@ public final class PaymentMapper {
     public static TransactionResponse toResponse(PaymentTransaction t) {
         return new TransactionResponse(t.getPaymentTransactionId(), t.getKind(), t.getProviderRef(), t.getAmount(), t.getStatus(),
                 t.getFailureReason(), t.getCreatedAt(),
-                t.getRecordedBy() == null ? null : t.getRecordedBy().getFullName());
+                t.getRecordedBy() == null ? null : t.getRecordedBy().getFullName(), t.getMethod(), t.getReference(),
+                t.getNote());
     }
 }

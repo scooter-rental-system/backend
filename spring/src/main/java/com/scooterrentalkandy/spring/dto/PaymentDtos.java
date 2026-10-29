@@ -57,7 +57,7 @@ public final class PaymentDtos {
             LocalDateTime createdAt,
             /** Provider calls (or recorded cash) for this payment; included for a single booking, null in lists. */
             List<TransactionResponse> transactions,
-            /** CASH only: cash still to hand back to the customer; null when none. */
+            /** Cash, QR or bank transfer only: money still owed back to the customer; null when none. */
             BigDecimal refundDue) {
     }
 
@@ -70,9 +70,13 @@ public final class PaymentDtos {
             @NotNull @DecimalMin("0.01") @Digits(integer = 8, fraction = 2) BigDecimal amount) {
     }
 
-    /** {@code recordedBy}: the admin who recorded a cash receipt or refund; null for provider transactions. */
+    /**
+     * {@code method}: how this amount moved. {@code recordedBy}: the admin who recorded or approved a manual amount or
+     * refund; null for provider transactions. {@code reference} and {@code note}: a transfer reference, and an admin's
+     * note on a manual refund.
+     */
     public record TransactionResponse(UUID id, PaymentTransaction.Kind kind, String providerRef, BigDecimal amount,
                                       PaymentTransaction.Status status, String failureReason, LocalDateTime createdAt,
-                                      String recordedBy) {
+                                      String recordedBy, PaymentMethod method, String reference, String note) {
     }
 }

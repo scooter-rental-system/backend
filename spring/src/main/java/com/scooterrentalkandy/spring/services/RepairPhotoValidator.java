@@ -27,6 +27,20 @@ public final class RepairPhotoValidator {
     static final String WRONG_TYPE = "Photos must be JPEG, PNG or WebP images.";
     static final String UNREADABLE = "A photo could not be read as an image. Choose another file.";
 
+    /** What the user is told when an image is refused; the checks are the same for every kind of image. */
+    public record Messages(String empty, String tooLarge, String wrongType, String unreadable) {
+
+        /** The messages for a single named image, such as "receipt" or "QR image". */
+        public static Messages forOne(String noun) {
+            return new Messages("The " + noun + " is empty. Choose the image again.",
+                    "The " + noun + " must be 5 MB or smaller.",
+                    "The " + noun + " must be a JPEG, PNG or WebP image.",
+                    "The " + noun + " could not be read as an image. Choose another file.");
+        }
+    }
+
+    private static final Messages PHOTO = new Messages(EMPTY, TOO_LARGE, WRONG_TYPE, UNREADABLE);
+
     /** An accepted image type: its media type, the extension used for storage and the extensions allowed on upload. */
     public enum ImageType {
         JPEG("image/jpeg", "jpg", Set.of("jpg", "jpeg")),
@@ -72,11 +86,19 @@ public final class RepairPhotoValidator {
     }
 
     static CheckedPhoto check(MultipartFile file) {
+        return check(file, PHOTO);
+    }
+
+    /**
+     * One image (a payment receipt or the QR image) under the same rules as a repair photo: a non-empty JPEG, PNG or
+     * WebP of at most {@link #MAX_BYTES}, decided by its own bytes.
+     */
+    public static CheckedPhoto check(MultipartFile file, Messages m) {
         if (file.isEmpty()) {
-            throw ApiException.badRequest(EMPTY);
+            throw ApiException.badRequest(m.empty());
         }
         if (file.getSize() > MAX_BYTES) {
-            throw ApiException.badRequest(TOO_LARGE);
+            throw ApiException.badRequest(m.tooLarge());
         }
         byte[] bytes;
         try {
@@ -85,14 +107,14 @@ public final class RepairPhotoValidator {
             throw new UncheckedIOException(e);
         }
         if (bytes.length > MAX_BYTES) {
-            throw ApiException.badRequest(TOO_LARGE);
+            throw ApiException.badRequest(m.tooLarge());
         }
         ImageType type = detect(bytes);
         if (type == null || !declaredAs(file.getContentType(), type) || !extensionFits(file.getOriginalFilename(), type)) {
-            throw ApiException.badRequest(WRONG_TYPE);
+            throw ApiException.badRequest(m.wrongType());
         }
         if (!wellFormed(type, bytes)) {
-            throw ApiException.badRequest(UNREADABLE);
+            throw ApiException.badRequest(m.unreadable());
         }
         return new CheckedPhoto(type, bytes);
     }
