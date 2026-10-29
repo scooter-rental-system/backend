@@ -39,6 +39,8 @@ import org.springframework.web.multipart.MultipartFile;
 public class RepairService {
 
     static final String NOT_IN_PROGRESS = "A repair can be reported only while the rental is in progress";
+    public static final String UNRESOLVED_REPAIRS = "This rental has unresolved repair reports. Resolve them before "
+            + "calculating the final bill.";
     static final String CLAIM_NEEDS_SELF_ARRANGED = "A claimed amount is only for a repair you arranged yourself";
     static final String APPROVAL_NEEDS_SELF_ARRANGED =
             "A reimbursement can only be approved for a repair the customer arranged themselves";
@@ -142,6 +144,15 @@ public class RepairService {
     @Transactional(readOnly = true)
     public BigDecimal approvedReimbursement(UUID bookingId) {
         return PricingService.money(repairs.approvedReimbursement(bookingId));
+    }
+
+    /**
+     * Whether the final bill must wait: a self-arranged repair report is not RESOLVED yet, so an admin may still
+     * approve (or decline) a reimbursement that changes the total. Other reports cannot change the bill.
+     */
+    @Transactional(readOnly = true)
+    public boolean hasUnresolvedReimbursement(UUID bookingId) {
+        return repairs.existsByBooking_BookingIdAndSelfArrangedTrueAndStatusNot(bookingId, RepairReport.Status.RESOLVED);
     }
 
     @Transactional(readOnly = true)

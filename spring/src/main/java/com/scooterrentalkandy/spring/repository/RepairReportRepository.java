@@ -24,4 +24,10 @@ public interface RepairReportRepository extends JpaRepository<RepairReport, UUID
             where r.booking.bookingId = :bookingId and r.selfArranged = true and r.approvedAmount is not null
               and r.status = com.scooterrentalkandy.spring.entity.RepairReport.Status.RESOLVED""")
     BigDecimal approvedReimbursement(@Param("bookingId") UUID bookingId);
+
+    /**
+     * Whether the booking has a self-arranged repair report that is not RESOLVED yet: an admin may still approve a
+     * reimbursement on it, so the final bill must wait for it.
+     */
+    boolean existsByBooking_BookingIdAndSelfArrangedTrueAndStatusNot(UUID bookingId, RepairReport.Status status);
 }

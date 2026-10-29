@@ -645,14 +645,17 @@ class ManualPaymentTests extends PostgresIntegrationTest {
     }
 
     @Test
-    void aClaimAloneOrARepairStillUnderReviewDoesNotReduceTheBalance() throws Exception {
+    void aClaimAloneDoesNotReduceTheBalanceAndARepairUnderReviewBlocksTheFinalBill() throws Exception {
         UUID claimOnly = rentalOf8000(PaymentMethod.BANK_TRANSFER);
-        report(claimOnly, true, "2000");
+        String claim = report(claimOnly, true, "2000");
+        end(claimOnly).andExpect(status().isConflict());
+        review(claim, "RESOLVED", "null");
         end(claimOnly).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
 
         UUID underReview = rentalOf8000(PaymentMethod.QR_TRANSFER);
         review(report(underReview, true, "2000"), "UNDER_REVIEW", "1500");
-        end(underReview).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
+        end(underReview).andExpect(status().isConflict()).andExpect(jsonPath("$.message").value("This rental has unresolved repair reports. Resolve them before calculating the final bill."));
+        assertThat(booking(underReview).getEndedAt()).isNull();
     }
 
     @Test

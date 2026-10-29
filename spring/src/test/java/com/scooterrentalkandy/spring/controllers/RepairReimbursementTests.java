@@ -182,17 +182,20 @@ class RepairReimbursementTests extends PostgresIntegrationTest {
     @Test
     void theCustomersClaimedAmountAloneDoesNotChangeTheBill() throws Exception {
         UUID id = paidRentalUnderWay();
-        report(id, true, "2000");
+        String repair = report(id, true, "2000");
+        end(id).andExpect(status().isConflict()); // resolve the report first
 
+        review(repair, "RESOLVED", "null").andExpect(status().isOk());
         end(id).andExpect(status().isOk()).andExpect(jsonPath("$.totalCost").value(3250.00));
     }
 
     @Test
-    void anApprovalOnAReportNotYetResolvedDoesNotChangeTheBill() throws Exception {
+    void anApprovalOnAReportNotYetResolvedBlocksTheFinalBill() throws Exception {
         UUID id = paidRentalUnderWay();
         review(report(id, true, "2000"), "UNDER_REVIEW", "1500").andExpect(status().isOk());
 
-        end(id).andExpect(status().isOk()).andExpect(jsonPath("$.totalCost").value(3250.00));
+        end(id).andExpect(status().isConflict()).andExpect(jsonPath("$.message").value("This rental has unresolved repair reports. Resolve them before calculating the final bill."));
+        assertThat(gateway.charges()).isEmpty();
     }
 
     @Test
@@ -224,8 +227,11 @@ class RepairReimbursementTests extends PostgresIntegrationTest {
         String second = report(id, true, "600");
         review(second, "RESOLVED", "500").andExpect(status().isOk());
         review(second, "RESOLVED", "500").andExpect(status().isOk()); // saved twice: still counted once
-        review(report(id, true, "900"), "UNDER_REVIEW", "900").andExpect(status().isOk());
+        String declined = report(id, true, "900");
+        review(declined, "UNDER_REVIEW", "900").andExpect(status().isOk());
         review(report(id, false, "null"), "RESOLVED", "null").andExpect(status().isOk());
+        end(id).andExpect(status().isConflict());
+        review(declined, "RESOLVED", "null").andExpect(status().isOk()); // resolved without a reimbursement
 
         end(id).andExpect(status().isOk()).andExpect(jsonPath("$.totalCost").value(1750.00));
     }
@@ -256,14 +262,15 @@ class RepairReimbursementTests extends PostgresIntegrationTest {
     void theReimbursementCannotChangeAfterTheFinalBillIsCalculated() throws Exception {
         UUID id = paidRentalUnderWay();
         String repair = report(id, true, "2000");
-        review(repair, "UNDER_REVIEW", "1500").andExpect(status().isOk());
-        end(id).andExpect(status().isOk()).andExpect(jsonPath("$.totalCost").value(3250.00));
+        review(repair, "RESOLVED", "1500").andExpect(status().isOk());
+        end(id).andExpect(status().isOk()).andExpect(jsonPath("$.totalCost").value(1750.00));
 
-        review(repair, "RESOLVED", "1500").andExpect(status().isConflict())
+        review(repair, "RESOLVED", "2000").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.startsWith(
                         "The final bill for this rental has already been calculated")));
-        // A status or note change that does not move the reimbursement is still allowed.
-        review(repair, "ASSISTANCE_ARRANGED", "1500").andExpect(status().isOk());
+        review(repair, "UNDER_REVIEW", "1500").andExpect(status().isConflict());
+        // Saving it again without moving the reimbursement is still allowed.
+        review(repair, "RESOLVED", "1500").andExpect(status().isOk());
     }
 
     @Test

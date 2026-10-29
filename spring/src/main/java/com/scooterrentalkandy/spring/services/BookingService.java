@@ -288,6 +288,11 @@ public class BookingService {
             throw ApiException.conflict("Only an active rental can be ended (status " + b.getStatus() + ")");
         }
         if (b.getEndedAt() == null) {
+            // A self-arranged repair still under review could change the reimbursement: resolve it first, so the
+            // bill is never calculated without it (and cannot change afterwards).
+            if (repairs.hasUnresolvedReimbursement(b.getBookingId())) {
+                throw ApiException.conflict(RepairService.UNRESOLVED_REPAIRS);
+            }
             LocalDateTime end = now();
             if (end.isBefore(b.getStartTime())) {
                 throw ApiException.conflict("This rental starts at " + b.getStartTime().format(WHEN)

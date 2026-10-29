@@ -469,17 +469,24 @@ class CashPaymentTests extends PostgresIntegrationTest {
     @Test
     void theClaimedAmountAloneDoesNotReduceTheCashBalance() throws Exception {
         UUID id = cashRentalOf8000();
-        report(id, true, "2000");
+        String repair = report(id, true, "2000");
+        end(id).andExpect(status().isConflict()); // the report must be resolved first
 
+        // Resolved with no approved amount: the claim alone takes nothing off.
+        review(repair, "RESOLVED", "null");
         end(id).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
     }
 
     @Test
-    void anApprovalStillUnderReviewDoesNotReduceTheCashBalance() throws Exception {
+    void anApprovalStillUnderReviewBlocksTheFinalBill() throws Exception {
         UUID id = cashRentalOf8000();
         review(report(id, true, "2000"), "UNDER_REVIEW", "1500");
 
-        end(id).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
+        end(id).andExpect(status().isConflict()).andExpect(jsonPath("$.message").value("This rental has unresolved repair reports. Resolve them before calculating the final bill."));
+        Booking b = bookings.findById(id).orElseThrow();
+        assertThat(b.getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(b.getEndedAt()).isNull();
+        assertThat(payment(id).getBalanceDue()).isNull();
     }
 
     @Test
@@ -487,7 +494,10 @@ class CashPaymentTests extends PostgresIntegrationTest {
         UUID id = cashRentalOf8000();
         review(report(id, true, "1200"), "RESOLVED", "1000");
         review(report(id, true, "700"), "RESOLVED", "500");
-        review(report(id, true, "900"), "UNDER_REVIEW", "900");
+        String declined = report(id, true, "900");
+        review(declined, "UNDER_REVIEW", "900");
+        end(id).andExpect(status().isConflict());
+        review(declined, "RESOLVED", "null"); // resolved without a reimbursement
 
         // 8,000 - 1,500 = 6,500 total; 6,250 due after the 250 received.
         end(id).andExpect(jsonPath("$.pendingTotalCost").value(6500.00))
