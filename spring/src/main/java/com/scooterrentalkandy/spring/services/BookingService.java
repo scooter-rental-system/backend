@@ -238,6 +238,16 @@ public class BookingService {
         return settlement.booking();
     }
 
+    /**
+     * Only the first step of {@link #complete}: fixes the end time, the GPS distance and the final total and issues
+     * the final invoice, without charging or refunding anything. Used by the viva demo profile, whose rentals have
+     * no payment to settle against; the booking stays ACTIVE with the final total pending.
+     */
+    public BookingResponse endWithoutCollecting(UUID bookingId, AuthUser user) {
+        transaction.executeWithoutResult(status -> freezeSettlement(bookingId, user));
+        return transaction.execute(status -> toResponse(find(bookingId)));
+    }
+
     private void freezeSettlement(UUID bookingId, AuthUser user) {
         bookings.findByIdForUpdate(bookingId).orElseThrow(() -> ApiException.notFound("Booking"));
         Booking b = findOwned(bookingId, user);
