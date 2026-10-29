@@ -67,7 +67,15 @@ public class BillingService {
             inv.addLine(g.name() + " x" + g.quantity() + ", " + g.days() + " day" + (g.days() == 1 ? "" : "s"),
                     BigDecimal.valueOf((long) g.quantity() * g.days()), g.dailyRate(), g.lineTotal());
         }
-        inv.setSubtotal(bill.total());
+        // An approved repair reimbursement (BE-043) is a negative line; the subtotal stays the rental charge.
+        if (bill.reimbursementApplied().signum() > 0) {
+            boolean capped = bill.reimbursementApplied().compareTo(bill.approvedReimbursement()) < 0;
+            inv.addLine("Approved repair reimbursement" + (capped ? " (" + currency + " "
+                            + bill.approvedReimbursement().toPlainString() + " approved; limited to the rental subtotal)"
+                            : ""),
+                    BigDecimal.ONE, bill.reimbursementApplied().negate(), bill.reimbursementApplied().negate());
+        }
+        inv.setSubtotal(bill.subtotal());
         inv.setTax(BigDecimal.ZERO.setScale(2));
         inv.setTotal(bill.total());
         return invoices.save(inv);

@@ -23,12 +23,14 @@ import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import com.scooterrentalkandy.spring.exception.ApiException;
 import com.scooterrentalkandy.spring.entity.Booking;
 import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
+import com.scooterrentalkandy.spring.entity.Invoice;
 import com.scooterrentalkandy.spring.entity.MaintenanceRecord;
 import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.entity.Scooter;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
+import com.scooterrentalkandy.spring.repository.InvoiceRepository;
 import com.scooterrentalkandy.spring.repository.MaintenanceRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
@@ -49,11 +51,12 @@ public class ReportService {
     private final UserRepository users;
     private final Clock clock;
     private final PricingService pricing;
+    private final InvoiceRepository invoices;
     private final String currency;
 
     public ReportService(BookingRepository bookings, PaymentRepository payments, ScooterRepository scooters,
                          MaintenanceRepository maintenance, UserRepository users, Clock clock, PricingService pricing,
-                         AppProperties props) {
+                         InvoiceRepository invoices, AppProperties props) {
         this.bookings = bookings;
         this.payments = payments;
         this.scooters = scooters;
@@ -61,6 +64,7 @@ public class ReportService {
         this.users = users;
         this.clock = clock;
         this.pricing = pricing;
+        this.invoices = invoices;
         this.currency = props.billing().currency();
     }
 
@@ -173,7 +177,8 @@ public class ReportService {
             "Customer Email", "Customer NIC", "Scooter Code", "Scooter Plate", "Scooter Model", "Status",
             "Rental Start", "Rental End", "Daily Rate (LKR)", "Extra Hour Rate (LKR)", "Charged Days", "Extra Hours",
             "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)", "Excess Distance (km)",
-            "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)", "Total Amount (LKR)",
+            "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)", "Rental Subtotal (LKR)",
+            "Approved Repair Reimbursement (LKR)", "Total Amount (LKR)",
             "Amount Paid (LKR)", "Payment Status", "Balance Due (LKR)", "Created At");
 
     /** Spreadsheet-friendly local date and time (Sri Lanka time, as stored). */
@@ -187,7 +192,9 @@ public class ReportService {
      * All bookings created in the window as CSV (for spreadsheets/accounting), one row per booking. The charge
      * breakdown (days, extra hours, distance allowance, time/distance/gear charges) is filled only for rentals that
      * have ended, from the shared PricingService with the scooter's and gear's rates (rates are not stored on bookings,
-     * SDS 2.4); total, paid and balance due are the billed amounts. Text cells are quoted and protected against
+     * SDS 2.4); the rental subtotal and the approved repair reimbursement come from the final invoice (0 when none was
+     * approved), and the total is the billed amount after that reimbursement; total, paid and balance due are the
+     * billed amounts. Text cells are quoted and protected against
      * spreadsheet formula injection; numbers are plain.
      */
     @Transactional(readOnly = true)
@@ -204,6 +211,13 @@ public class ReportService {
             BigDecimal total = b.getTotalCost() != null ? b.getTotalCost() : b.getPendingTotalCost();
             PricingService.FinalBill bill = ended == null || km == null ? null
                     : pricing.finalBill(s, PricingService.selectionsOf(b), b.getStartTime(), ended, km);
+            // The final invoice is the record of what was billed: subtotal, less the reimbursement, gives the total.
+            Invoice finalInvoice = bill == null ? null
+                    : invoices.findFirstByBooking_BookingIdAndKind(b.getBookingId(), Invoice.Kind.FINAL).orElse(null);
+            BigDecimal subtotal = finalInvoice != null ? finalInvoice.getSubtotal() : bill == null ? null : bill.subtotal();
+            BigDecimal reimbursement = finalInvoice != null
+                    ? finalInvoice.getSubtotal().subtract(finalInvoice.getTotal()).max(BigDecimal.ZERO).setScale(2)
+                    : bill == null ? null : BigDecimal.ZERO.setScale(2);
             String gear = b.getGear().stream()
                     .map(g -> g.getGearItem().getName() + " x" + g.getQuantity())
                     .collect(Collectors.joining("; "));
@@ -219,7 +233,8 @@ public class ReportService {
                             bill == null ? "" : plain(bill.timeCost()), plain(km == null ? null : km.setScale(2)),
                             bill == null ? "" : plain(bill.includedKm()), bill == null ? "" : plain(bill.excessKm()),
                             plain(s.getPerKmRate()), bill == null ? "" : plain(bill.distanceCost()), csv(gear),
-                            bill == null ? "" : plain(bill.gearCost()), plain(total),
+                            bill == null ? "" : plain(bill.gearCost()), plain(subtotal), plain(reimbursement),
+                            plain(total),
                             p == null ? "" : plain(p.getAmount()), p == null ? "" : p.getStatus().name(),
                             p == null ? "" : plain(p.getBalanceDue()), b.getCreatedAt().format(CSV_TIME)))
                     .append(CSV_EOL);

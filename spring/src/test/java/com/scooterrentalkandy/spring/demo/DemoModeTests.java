@@ -3,6 +3,7 @@ package com.scooterrentalkandy.spring.demo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -355,5 +356,43 @@ class DemoModeTests {
                 .isEqualTo(Invoice.Status.VOID);
         assertThat(payments.findByBooking_BookingId(id)).isEmpty();
         demo(admin, "close", id).andExpect(status().isConflict());
+    }
+
+    @Test
+    void theDemoFinalBillUsesTheSameApprovedRepairReimbursementRule() throws Exception {
+        User customer = saveUser(Role.USER);
+        User admin = saveUser(Role.ADMIN);
+        UUID id = booking(customer, true);
+        demo(admin, "activate", id).andExpect(status().isOk());
+        Booking b = reload(id);
+        b.setStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30));
+        bookings.saveAndFlush(b);
+        String repair = mvc.perform(as(customer, post("/api/bookings/" + id + "/repairs"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"description\": \"Chain snapped\", \"selfArranged\": true, \"claimedAmount\": 2000}"))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        mvc.perform(as(admin, put("/api/admin/repairs/" + JsonPath.read(repair, "$.id")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"RESOLVED\", \"approvedAmount\": 1500}"))
+                .andExpect(status().isOk());
+
+        // 1 day + 3 extra hours = 3,250, less the approved 1,500 (not the claimed 2,000).
+        demo(admin, "end", id).andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("BALANCE_DUE"))
+                .andExpect(jsonPath("$.pendingTotalCost").value(1750.00))
+                .andExpect(jsonPath("$.payment").doesNotExist());
+
+        Booking ended = reload(id);
+        assertThat(ended.getPendingTotalCost()).isEqualByComparingTo(pricing.finalBill(ended.getScooter(),
+                PricingService.selectionsOf(ended), ended.getStartTime(), ended.getEndedAt(),
+                ended.getPendingDistanceKm(), new BigDecimal("1500")).total());
+        Invoice inv = invoices.findFirstByBooking_BookingIdAndKind(id, Invoice.Kind.FINAL).orElseThrow();
+        assertThat(inv.getSubtotal()).isEqualByComparingTo("3250.00");
+        assertThat(inv.getTotal()).isEqualByComparingTo("1750.00");
+        assertThat(inv.getLines()).anySatisfy(l -> {
+            assertThat(l.getDescription()).isEqualTo("Approved repair reimbursement");
+            assertThat(l.getAmount()).isEqualByComparingTo("-1500.00");
+        });
+        assertThat(payments.findByBooking_BookingId(id)).isEmpty();
     }
 }

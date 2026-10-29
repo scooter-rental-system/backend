@@ -428,8 +428,10 @@ public class PaymentService {
     }
 
     /**
-     * Only when the final cost is below what was paid (e.g. rates were lowered during the rental): the
-     * difference is refunded once and the payment amount becomes the final cost. A refusal is recorded on the
+     * Only when the final cost is below what was paid (e.g. rates were lowered during the rental, or an approved
+     * repair reimbursement reduced the bill): the difference is refunded once and the payment amount becomes the
+     * final cost. When nothing is owed at all the whole payment is refunded and recorded like a full refund (status
+     * REFUNDED, the amount stays what was paid), since a payment amount is never zero. A refusal is recorded on the
      * payment for the team to resolve.
      */
     @Transactional(propagation = Propagation.MANDATORY)
@@ -438,7 +440,13 @@ public class PaymentService {
         ChargeResult r = refundOnce(gateway(), p, p.getStripePaymentId(), excess,
                 "Final cost below amount paid for " + b.getReference(), "excess");
         if (r != null && r.outcome() != Outcome.FAILED) {
-            p.setAmount(p.getAmount().subtract(excess));
+            if (excess.compareTo(p.getAmount()) >= 0) {
+                if (r.succeeded()) {
+                    p.setStatus(PaymentStatus.REFUNDED);
+                }
+            } else {
+                p.setAmount(p.getAmount().subtract(excess));
+            }
             p.setFailureReason(null);
         }
     }

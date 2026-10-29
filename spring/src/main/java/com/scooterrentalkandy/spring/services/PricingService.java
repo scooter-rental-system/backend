@@ -28,6 +28,10 @@ import org.springframework.stereotype.Service;
  * further allowance. Only the kilometres from the GPS log above the allowance are charged, at the scooter's per-km
  * (excess-km) rate.
  *
+ * <p>Approved repair reimbursement: the rental subtotal (time + excess distance + gear) is reduced by the repair
+ * reimbursement an admin approved for the rental, never below zero: total = max(0, subtotal - reimbursement). Any
+ * approved amount above the subtotal is not turned into a negative bill; it is a separate refund matter.
+ *
  * <p>Minimum rental: one hour. The initial charge taken at checkout is that minimum (one extra hour) plus one day of
  * each gear item; the balance is charged when the rental ends.
  */
@@ -57,12 +61,16 @@ public class PricingService {
 
     /**
      * The final bill. {@code distanceKm} is the whole GPS distance; {@code includedKm} = max(1, days) x 120 and
-     * {@code excessKm} = max(0, distance - included) is what {@code perKmRate} applies to.
+     * {@code excessKm} = max(0, distance - included) is what {@code perKmRate} applies to. {@code subtotal} is time +
+     * distance + gear; {@code approvedReimbursement} is the repair reimbursement approved for the rental, of which
+     * {@code reimbursementApplied} (at most the subtotal) is deducted; {@code total} = subtotal - applied, never
+     * negative. Without a reimbursement, total = subtotal.
      */
     public record FinalBill(long hours, long days, BigDecimal dailyRate, BigDecimal dayCost, long extraHours,
                             BigDecimal hourlyRate, BigDecimal extraHourCost, BigDecimal timeCost,
                             BigDecimal distanceKm, BigDecimal includedKm, BigDecimal excessKm, BigDecimal perKmRate,
                             BigDecimal distanceCost, int gearDays, List<GearLine> gear, BigDecimal gearCost,
+                            BigDecimal subtotal, BigDecimal approvedReimbursement, BigDecimal reimbursementApplied,
                             BigDecimal total) {
     }
 
@@ -134,8 +142,15 @@ public class PricingService {
                 lines, gearCost, scooterCost.add(gearCost));
     }
 
+    /** The final bill without any repair reimbursement. */
     public FinalBill finalBill(Scooter scooter, List<GearSelection> gear, LocalDateTime start, LocalDateTime end,
                                BigDecimal distanceKm) {
+        return finalBill(scooter, gear, start, end, distanceKm, BigDecimal.ZERO);
+    }
+
+    /** The final bill, reduced by the approved repair reimbursement (never below zero). */
+    public FinalBill finalBill(Scooter scooter, List<GearSelection> gear, LocalDateTime start, LocalDateTime end,
+                               BigDecimal distanceKm, BigDecimal approvedReimbursement) {
         long seconds = seconds(start, end);
         ScooterTime time = scooterTime(seconds);
         BigDecimal dayCost = money(scooter.getDailyRate().multiply(BigDecimal.valueOf(time.days())));
@@ -146,10 +161,13 @@ public class PricingService {
         int days = gearDays(seconds);
         List<GearLine> lines = gearLines(gear, days);
         BigDecimal gearCost = sum(lines);
+        BigDecimal subtotal = money(timeCost.add(distanceCost).add(gearCost));
+        BigDecimal approved = money(approvedReimbursement == null ? BigDecimal.ZERO : approvedReimbursement.max(BigDecimal.ZERO));
+        BigDecimal applied = approved.min(subtotal);
         return new FinalBill(billableHours(start, end), time.days(), scooter.getDailyRate(), dayCost,
                 time.extraHours(), scooter.getHourlyRate(), extraHourCost, timeCost, d.totalKm(), d.includedKm(),
-                d.excessKm(), scooter.getPerKmRate(), distanceCost, days, lines, gearCost,
-                timeCost.add(distanceCost).add(gearCost));
+                d.excessKm(), scooter.getPerKmRate(), distanceCost, days, lines, gearCost, subtotal, approved, applied,
+                subtotal.subtract(applied));
     }
 
     private static BigDecimal timeCost(Scooter scooter, ScooterTime time) {

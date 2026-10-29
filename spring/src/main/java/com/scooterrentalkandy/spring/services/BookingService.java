@@ -73,6 +73,7 @@ public class BookingService {
     private final BillingService billing;
     private final GpsService gps;
     private final MaintenanceService maintenance;
+    private final RepairService repairs;
     private final NotificationService notifications;
     private final UnpaidBookingExpiry unpaidExpiry;
     private final TransactionTemplate transaction;
@@ -82,7 +83,7 @@ public class BookingService {
     public BookingService(BookingRepository bookings, ScooterRepository scooters, UserRepository users,
                           GearService gearService, PricingService pricing, ContractService contracts, PaymentService payments,
                           BillingService billing, GpsService gps, MaintenanceService maintenance,
-                          NotificationService notifications, UnpaidBookingExpiry unpaidExpiry,
+                          RepairService repairs, NotificationService notifications, UnpaidBookingExpiry unpaidExpiry,
                           PlatformTransactionManager transactionManager, Clock clock, AppProperties props) {
         this.bookings = bookings;
         this.scooters = scooters;
@@ -94,6 +95,7 @@ public class BookingService {
         this.billing = billing;
         this.gps = gps;
         this.maintenance = maintenance;
+        this.repairs = repairs;
         this.notifications = notifications;
         this.unpaidExpiry = unpaidExpiry;
         this.transaction = new TransactionTemplate(transactionManager);
@@ -261,8 +263,9 @@ public class BookingService {
                         + "; cancel the booking instead of ending it");
             }
             BigDecimal km = gps.rentalDistanceKm(b.getBookingId(), b.getStartTime(), end);
+            // The rental subtotal less the repair reimbursement approved so far (RESOLVED reports), never below zero.
             FinalBill bill = pricing.finalBill(b.getScooter(), PricingService.selectionsOf(b), b.getStartTime(), end,
-                    km);
+                    km, repairs.approvedReimbursement(b.getBookingId()));
             // Frozen settlement: kept on the ACTIVE booking until the balance is collected (SDS: endTime and
             // totalCost stay NULL until COMPLETED).
             b.setEndedAt(end);

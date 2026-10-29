@@ -1,5 +1,6 @@
 package com.scooterrentalkandy.spring.entity;
 
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -10,16 +11,21 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import lombok.Getter;
 import lombok.Setter;
 
 /**
- * A repair or breakdown reported during a rental (V17). The approved amount is a reimbursement record for a repair
- * the customer arranged themselves; it moves no money.
+ * A repair or breakdown reported during a rental (V17), with optional photos (V19). The approved amount is the
+ * reimbursement for a repair the customer arranged themselves; once the report is RESOLVED it is deducted from the
+ * rental's final bill (see RepairService#approvedReimbursement). The customer's claimed amount never is.
  */
 @Entity
 @Table(name = "repair_reports")
@@ -52,7 +58,7 @@ public class RepairReport {
     @Column(name = "claimed_amount", precision = 10, scale = 2)
     private BigDecimal claimedAmount;
 
-    /** Set by an admin; a record of the approved reimbursement only. */
+    /** Set by an admin; deducted from the final bill once the report is RESOLVED. */
     @Column(name = "approved_amount", precision = 10, scale = 2)
     private BigDecimal approvedAmount;
 
@@ -68,4 +74,8 @@ public class RepairReport {
 
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
+
+    @OneToMany(mappedBy = "repairReport", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("position")
+    private List<RepairPhoto> photos = new ArrayList<>();
 }
