@@ -4,8 +4,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import com.scooterrentalkandy.spring.dto.UserDtos.AuthResponse;
 import com.scooterrentalkandy.spring.dto.UserDtos.ChangePasswordRequest;
+import com.scooterrentalkandy.spring.dto.UserDtos.ForgotPasswordRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.LoginRequest;
+import com.scooterrentalkandy.spring.dto.UserDtos.MessageResponse;
 import com.scooterrentalkandy.spring.dto.UserDtos.RegisterRequest;
+import com.scooterrentalkandy.spring.dto.UserDtos.ResetPasswordRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.UpdateProfileRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.UserResponse;
 import com.scooterrentalkandy.spring.security.AuthUser;
@@ -13,6 +16,7 @@ import com.scooterrentalkandy.spring.exception.LoginRateLimitedException;
 import com.scooterrentalkandy.spring.security.CurrentUser;
 import com.scooterrentalkandy.spring.security.LoginRateLimiter;
 import com.scooterrentalkandy.spring.services.AuthService;
+import com.scooterrentalkandy.spring.services.PasswordResetService;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,10 +35,12 @@ public class AuthController {
 
     private final AuthService auth;
     private final LoginRateLimiter loginLimiter;
+    private final PasswordResetService passwordReset;
 
-    public AuthController(AuthService auth, LoginRateLimiter loginLimiter) {
+    public AuthController(AuthService auth, LoginRateLimiter loginLimiter, PasswordResetService passwordReset) {
         this.auth = auth;
         this.loginLimiter = loginLimiter;
+        this.passwordReset = passwordReset;
     }
 
     @PostMapping("/api/auth/register")
@@ -56,6 +62,18 @@ public class AuthController {
             loginLimiter.recordFailure(address);
             throw ex;
         }
+    }
+
+    /** Public. Always the same answer, whether or not the email has an account (no account enumeration). */
+    @PostMapping("/api/auth/forgot-password")
+    public MessageResponse forgotPassword(@Valid @RequestBody ForgotPasswordRequest req, HttpServletRequest request) {
+        return new MessageResponse(passwordReset.requestReset(req.email(), request.getRemoteAddr()));
+    }
+
+    /** Public: the one-time token from the emailed link is the proof. */
+    @PostMapping("/api/auth/reset-password")
+    public MessageResponse resetPassword(@Valid @RequestBody ResetPasswordRequest req) {
+        return new MessageResponse(passwordReset.resetPassword(req.token(), req.newPassword()));
     }
 
     @GetMapping("/api/me")

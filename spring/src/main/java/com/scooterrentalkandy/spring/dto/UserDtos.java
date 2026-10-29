@@ -50,6 +50,20 @@ public final class UserDtos {
             @NotBlank @Size(min = 8, max = 72, message = "must be between 8 and 72 characters") String newPassword) {
     }
 
+    /** Forgot password: the account email. The response is the same whether or not an account exists. */
+    public record ForgotPasswordRequest(@NotBlank @Email @Size(max = 255) String email) {
+    }
+
+    /** Reset password from an emailed one-time link; the new password follows the registration rule (8 to 72). */
+    public record ResetPasswordRequest(
+            @NotBlank @Size(max = 200) String token,
+            @NotBlank @Size(min = 8, max = 72, message = "must be between 8 and 72 characters") String newPassword) {
+    }
+
+    /** A plain message for the public password-reset endpoints. */
+    public record MessageResponse(String message) {
+    }
+
     public record LoginRequest(@NotBlank @Email String email, @NotBlank String password) {
     }
 

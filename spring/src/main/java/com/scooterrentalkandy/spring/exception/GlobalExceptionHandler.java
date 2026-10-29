@@ -94,6 +94,14 @@ public class GlobalExceptionHandler {
                         "Too many failed sign-in attempts. Please try again in " + seconds + " seconds.", null));
     }
 
+    /** Too many requests of one kind (for example password reset requests); Retry-After says when to try again. */
+    @ExceptionHandler(RateLimitedException.class)
+    public ResponseEntity<ErrorResponse> handleRateLimited(RateLimitedException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.retryAfterSeconds()))
+                .body(new ErrorResponse(Instant.now(), HttpStatus.TOO_MANY_REQUESTS.value(), ex.getMessage(), null));
+    }
+
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException ex) {
         return build(HttpStatus.FORBIDDEN, "You do not have access to this resource", null);
