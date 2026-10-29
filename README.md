@@ -1,5 +1,22 @@
 ﻿# Backend Repository
 
+  Deployed Link:http://65.0.5.214
+ 
+ Dummy Credentials:
+ 
+ USER (customer) account
+- ROLE: USER
+- EMAIL: demo@example.com
+- PASSWORD: Demo@12345
+- NIC: 000000000002.
+- 
+-   ADMIN account
+- ROLE: ADMIN
+- EMAIL: admin@scooterrentkandy.lk
+- PASSWORD: Admin@12345
+- NIC: 000000000001
+
+
 ## Running tests
 
 From `spring/`:
