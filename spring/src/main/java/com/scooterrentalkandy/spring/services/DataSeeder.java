@@ -67,8 +67,6 @@ public class DataSeeder implements ApplicationRunner {
                 "Sri Lanka");
         user(DEMO_EMAIL, DEMO_PASSWORD, "Alex Traveller", "+94 77 123 4567", "000000000002", Role.USER,
                 "N1234567", "IDP-UK-998877", "United Kingdom");
-        user("nimal@example.com", DEMO_PASSWORD, "Nimal Perera", "+94 71 555 0101", "000000000003",
-                Role.USER, "199012345678", "B1234567", "Sri Lanka");
 
         // Demo rates in LKR: per day, per extra hour (up to 8 hours after the whole days) and per km.
         scooter("SRK-01", "Honda Dio", "CP BHA-1234", 110, "2500", "250", "15", 4200,
