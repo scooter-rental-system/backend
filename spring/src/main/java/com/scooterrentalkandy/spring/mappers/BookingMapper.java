@@ -35,7 +35,7 @@ public final class BookingMapper {
                 b.getStartTime(), b.getEndTime(), billableHours, breakdown, b.getDistanceKm(), b.getTotalCost(), b.getEndedAt(),
                 b.getPendingDistanceKm(), b.getPendingTotalCost(), initialCharge, gear,
                 p == null ? null : new PaymentSummary(p.getStatus(), p.getAmount(), p.getBalanceDue(),
-                        p.getCardLast4(), p.getFailureReason(), p.getPaidAt()),
+                        p.getCardLast4(), p.getFailureReason(), p.getPaidAt(), p.getMethod(), p.getRefundDue()),
                 b.getPickupLocation(), b.getDropLocation(), b.getNotes(), b.isContractSigned(), b.getCancelledAt(),
                 b.getCreatedAt());
     }

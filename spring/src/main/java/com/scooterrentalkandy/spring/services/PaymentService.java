@@ -49,7 +49,9 @@ import org.springframework.transaction.annotation.Transactional;
  * When the rental ends, the remaining balance is charged to the saved payment method and added to the same row.
  * If that fails, the balance stays due on the row and can be paid online.
  *
- * <p>The provider is optional: without one, payment operations answer 503 and nothing is simulated.
+ * <p>The provider is optional: without one, payment operations answer 503 and nothing is simulated. Cash at the
+ * rental counter is separate ({@link CashPaymentService}): it never reaches the provider, and a CASH payment is
+ * never given to the card operations here.
  *
  * <p>Safety rules:
  * <ul>
@@ -139,6 +141,11 @@ public class PaymentService {
         } else if (p.getStripePaymentId() != null) {
             replace(gateway, p, p.getStripePaymentId());
         }
+        if (p.getMethod() == PaymentMethod.CASH) {
+            // The customer chose cash earlier but pays by card after all; no cash was recorded (status PENDING).
+            p.setMethod(PaymentMethod.CARD);
+            p.setProvider(gateway.name());
+        }
         int attempt = attempts(p, PaymentTransaction.Kind.INITIAL) + 1;
         PaymentGateway.Intent intent = gateway.createIntent(amount, currency, customer(gateway, b.getUser()),
                 "Scooter Rent Kandy booking " + b.getReference(), metadata(b, INITIAL),
@@ -162,6 +169,9 @@ public class PaymentService {
         if (b.getStatus() != BookingStatus.ACTIVE || p == null || p.getBalanceDue() == null) {
             throw ApiException.conflict("This booking has no balance due");
         }
+        if (p.getMethod() == PaymentMethod.CASH) {
+            throw ApiException.conflict("This booking is paid in cash: pay the balance at the rental counter");
+        }
         PaymentGateway gateway = gateway();
         boolean chargeProcessing = transactions.findByPayment_PaymentIdAndStatus(p.getPaymentId(),
                         PaymentTransaction.Status.PENDING).stream()
@@ -183,6 +193,25 @@ public class PaymentService {
                 null);
         return new PaymentIntentResponse(p.getPaymentId(), b.getBookingId(), BALANCE, intent.id(), intent.clientSecret(),
                 p.getBalanceDue(), currency, gateway.name());
+    }
+
+    /**
+     * Before an unpaid booking switches to cash: closes its card payment intent, if it has one, so it can no longer
+     * be paid. Without a configured provider the intent cannot be paid either and is closed here only. If the
+     * provider can no longer cancel it, the customer may be paying right now: 409 and nothing changes.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void closeCardAttempt(Payment p) {
+        if (p.getMethod() == PaymentMethod.CASH || p.getStripePaymentId() == null) {
+            return;
+        }
+        PaymentGateway gateway = gateways.getIfAvailable();
+        if (gateway == null) {
+            log.warn("No payment provider configured; intent {} closed locally only", p.getStripePaymentId());
+            settle(p, p.getStripePaymentId(), PaymentTransaction.Status.FAILED, "Replaced by a cash payment");
+        } else {
+            replace(gateway, p, p.getStripePaymentId());
+        }
     }
 
     /**
@@ -517,7 +546,11 @@ public class PaymentService {
     @Transactional(propagation = Propagation.MANDATORY)
     public void cancelOpenIntent(Booking b) {
         payments.findByBookingIdForUpdate(b.getBookingId()).ifPresent(p -> {
-            if (p.getStatus() == PaymentStatus.PENDING) {
+            if (p.getStatus() == PaymentStatus.PENDING && p.getMethod() == PaymentMethod.CASH) {
+                // No cash was received and no provider is involved: the pending cash payment just lapses.
+                p.setStatus(PaymentStatus.FAILED);
+                p.setFailureReason("Booking cancelled before the cash payment was received");
+            } else if (p.getStatus() == PaymentStatus.PENDING) {
                 PaymentGateway gateway = gateways.getIfAvailable();
                 if (gateway == null) {
                     log.warn("No payment provider configured; intent {} closed locally only", p.getStripePaymentId());

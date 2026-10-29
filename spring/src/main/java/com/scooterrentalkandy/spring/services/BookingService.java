@@ -21,6 +21,7 @@ import com.scooterrentalkandy.spring.dto.BookingDtos.QuoteRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.RentalBreakdown;
 import com.scooterrentalkandy.spring.dto.BookingDtos.SignContractRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.Stage;
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import com.scooterrentalkandy.spring.exception.ApiException;
 import com.scooterrentalkandy.spring.mappers.BookingMapper;
@@ -38,6 +39,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.AuthUser;
 import com.scooterrentalkandy.spring.services.PaymentEvents.BalancePaid;
+import com.scooterrentalkandy.spring.services.PaymentEvents.CashRefunded;
 import com.scooterrentalkandy.spring.services.PaymentEvents.InitialPaymentSucceeded;
 import com.scooterrentalkandy.spring.services.PricingService.FinalBill;
 import com.scooterrentalkandy.spring.services.PricingService.GearSelection;
@@ -70,6 +72,7 @@ public class BookingService {
     private final PricingService pricing;
     private final ContractService contracts;
     private final PaymentService payments;
+    private final CashPaymentService cash;
     private final BillingService billing;
     private final GpsService gps;
     private final MaintenanceService maintenance;
@@ -82,7 +85,7 @@ public class BookingService {
 
     public BookingService(BookingRepository bookings, ScooterRepository scooters, UserRepository users,
                           GearService gearService, PricingService pricing, ContractService contracts, PaymentService payments,
-                          BillingService billing, GpsService gps, MaintenanceService maintenance,
+                          CashPaymentService cash, BillingService billing, GpsService gps, MaintenanceService maintenance,
                           RepairService repairs, NotificationService notifications, UnpaidBookingExpiry unpaidExpiry,
                           PlatformTransactionManager transactionManager, Clock clock, AppProperties props) {
         this.bookings = bookings;
@@ -92,6 +95,7 @@ public class BookingService {
         this.pricing = pricing;
         this.contracts = contracts;
         this.payments = payments;
+        this.cash = cash;
         this.billing = billing;
         this.gps = gps;
         this.maintenance = maintenance;
@@ -198,11 +202,16 @@ public class BookingService {
         b.setStatus(BookingStatus.ACTIVE);
         Scooter s = b.getScooter();
         s.setStatus(ScooterStatus.RENTED);
-        notifications.notify(b.getUser(), "Booking confirmed: " + b.getReference(),
-                "Your " + s.getModel() + " (" + s.getPlateNumber() + ") is yours from " + b.getStartTime().format(WHEN)
-                        + ". You were charged " + currency + " " + payments.find(b.getBookingId()).map(Payment::getAmount)
-                        .orElse(BigDecimal.ZERO) + " now; the rest is billed by the hour and kilometre when you end "
-                        + "the rental.");
+        Payment paid = payments.find(b.getBookingId()).orElse(null);
+        BigDecimal amount = paid == null ? BigDecimal.ZERO : paid.getAmount();
+        boolean inCash = paid != null && paid.getMethod() == PaymentMethod.CASH;
+        notifications.notify(b.getUser(), "Booking confirmed: " + b.getReference(), inCash
+                ? "Your cash payment of " + currency + " " + amount + " was confirmed. Your " + s.getModel() + " ("
+                        + s.getPlateNumber() + ") is yours from " + b.getStartTime().format(WHEN) + "; the rest is "
+                        + "billed by the hour and kilometre when you end the rental and paid in cash at the counter."
+                : "Your " + s.getModel() + " (" + s.getPlateNumber() + ") is yours from " + b.getStartTime().format(WHEN)
+                        + ". You were charged " + currency + " " + amount + " now; the rest is billed by the hour and "
+                        + "kilometre when you end the rental.");
         notifications.notifyAdmins("New booking " + b.getReference(),
                 b.getUser().getFullName() + " booked " + s.getCode() + " from " + b.getStartTime().format(WHEN)
                         + ".");
@@ -211,6 +220,16 @@ public class BookingService {
     @EventListener
     @Transactional(propagation = Propagation.MANDATORY)
     public void onBalancePaid(BalancePaid event) {
+        Booking b = find(event.bookingId());
+        if (b.getStatus() == BookingStatus.ACTIVE && b.getEndedAt() != null) {
+            finishRental(b);
+        }
+    }
+
+    /** The cash owed back at the end of a rental was handed over: the rental completes. */
+    @EventListener
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void onCashRefunded(CashRefunded event) {
         Booking b = find(event.bookingId());
         if (b.getStatus() == BookingStatus.ACTIVE && b.getEndedAt() != null) {
             finishRental(b);
@@ -229,7 +248,9 @@ public class BookingService {
      * moves, so every later attempt charges exactly the same amount. The second charges the remaining balance (or
      * refunds an excess) and completes the booking. If the charge is declined the booking stays ACTIVE with the
      * balance due (402) and calling this again retries the same amount. If the provider cannot be reached, only
-     * the second transaction rolls back and a retry repeats the charge with the same idempotency key.
+     * the second transaction rolls back and a retry repeats the charge with the same idempotency key. A rental paid in
+     * cash is not charged: the balance due (or the cash owed back) waits on the payment for an admin to confirm at the
+     * counter, and the booking stays ACTIVE until then.
      */
     public BookingResponse complete(UUID bookingId, AuthUser user) {
         transaction.executeWithoutResult(status -> freezeSettlement(bookingId, user));
@@ -282,6 +303,13 @@ public class BookingService {
             throw ApiException.conflict("Only an active rental can be ended (status " + b.getStatus() + ")");
         }
         Payment p = payments.find(b.getBookingId()).orElseThrow(() -> new IllegalStateException("No payment"));
+        if (p.getMethod() == PaymentMethod.CASH) {
+            // Cash: the balance (or the cash owed back) waits at the counter for an admin to confirm it.
+            if (cash.settleAtEnd(b)) {
+                finishRental(b);
+            }
+            return new Settlement(toResponse(b), null);
+        }
         BigDecimal remaining = b.getPendingTotalCost().subtract(p.getAmount());
         if (remaining.signum() > 0) {
             if (!payments.chargeRemainingBalance(b, remaining)) {
@@ -338,12 +366,17 @@ public class BookingService {
                     throw ApiException.conflict("This rental has started and can no longer be cancelled; end it instead");
                 }
                 markCancelled(b);
-                Payment refund = payments.refundInFull(b, "Booking " + b.getReference() + " cancelled");
+                boolean inCash = payments.find(b.getBookingId()).map(p -> p.getMethod() == PaymentMethod.CASH)
+                        .orElse(false);
+                Payment refund = inCash ? cash.refundDueOnCancellation(b)
+                        : payments.refundInFull(b, "Booking " + b.getReference() + " cancelled");
                 b.getScooter().setStatus(ScooterStatus.AVAILABLE);
                 billing.voidEarlierRentalInvoice(b.getBookingId());
                 BigDecimal refunded = refund == null ? BigDecimal.ZERO : refund.getAmount();
-                notifications.notify(b.getUser(), "Booking cancelled: " + b.getReference(),
-                        "Your booking has been cancelled. A refund of " + currency + " " + refunded
+                notifications.notify(b.getUser(), "Booking cancelled: " + b.getReference(), inCash
+                        ? "Your booking has been cancelled. A cash refund of " + currency + " " + refunded
+                                + " is due to you at the rental counter."
+                        : "Your booking has been cancelled. A refund of " + currency + " " + refunded
                                 + " has been issued.");
                 notifications.notifyAdmins("Booking cancelled " + b.getReference(),
                         b.getUser().getFullName() + " cancelled their booking for " + b.getScooter().getCode());

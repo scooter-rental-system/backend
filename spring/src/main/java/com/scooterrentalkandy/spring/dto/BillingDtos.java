@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.entity.Invoice;
 import com.scooterrentalkandy.spring.entity.Payment;
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 
 public final class BillingDtos {
@@ -36,6 +37,17 @@ public final class BillingDtos {
             BigDecimal tax,
             BigDecimal total,
             LocalDateTime issuedAt,
-            List<InvoiceLineResponse> lines) {
+            List<InvoiceLineResponse> lines,
+            /** How the booking is paid: CARD or CASH; null when there is no payment (a viva demo rental). */
+            PaymentMethod paymentMethod,
+            /** FINAL invoice paid in cash: the cash recorded as received at the counter, and as handed back. */
+            BigDecimal cashReceived,
+            BigDecimal cashRefunded,
+            /** FINAL invoice paid in cash: cash still to hand back to the customer; null when none. */
+            BigDecimal refundDue) {
+    }
+
+    /** The cash an admin recorded as received and as handed back for a booking. */
+    public record CashTotals(BigDecimal received, BigDecimal refunded) {
     }
 }

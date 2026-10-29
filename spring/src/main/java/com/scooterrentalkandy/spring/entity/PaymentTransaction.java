@@ -17,7 +17,10 @@ import java.util.UUID;
 import lombok.Getter;
 import lombok.Setter;
 
-/** One call to the payment provider for a booking's payment, with the provider's reference (audit trail). */
+/**
+ * One call to the payment provider for a booking's payment, with the provider's reference (audit trail); or, for a
+ * CASH payment, one amount of cash an admin recorded as received or handed back (no provider reference).
+ */
 @Entity
 @Table(name = "payment_transactions")
 @Getter
@@ -58,6 +61,11 @@ public class PaymentTransaction {
 
     @Column(name = "failure_reason")
     private String failureReason;
+
+    /** The admin who recorded a cash receipt or refund; null for payment-provider transactions. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "recorded_by")
+    private User recordedBy;
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;

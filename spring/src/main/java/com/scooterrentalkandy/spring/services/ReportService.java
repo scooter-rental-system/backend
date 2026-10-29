@@ -179,7 +179,8 @@ public class ReportService {
             "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)", "Excess Distance (km)",
             "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)", "Rental Subtotal (LKR)",
             "Approved Repair Reimbursement (LKR)", "Total Amount (LKR)",
-            "Amount Paid (LKR)", "Payment Status", "Balance Due (LKR)", "Created At");
+            "Amount Paid (LKR)", "Payment Method", "Payment Status", "Balance Due (LKR)", "Refund Due (LKR)",
+            "Created At");
 
     /** Spreadsheet-friendly local date and time (Sri Lanka time, as stored). */
     private static final java.time.format.DateTimeFormatter CSV_TIME =
@@ -235,8 +236,9 @@ public class ReportService {
                             plain(s.getPerKmRate()), bill == null ? "" : plain(bill.distanceCost()), csv(gear),
                             bill == null ? "" : plain(bill.gearCost()), plain(subtotal), plain(reimbursement),
                             plain(total),
-                            p == null ? "" : plain(p.getAmount()), p == null ? "" : p.getStatus().name(),
-                            p == null ? "" : plain(p.getBalanceDue()), b.getCreatedAt().format(CSV_TIME)))
+                            p == null ? "" : plain(p.getAmount()), p == null ? "" : p.getMethod().name(),
+                            p == null ? "" : p.getStatus().name(), p == null ? "" : plain(p.getBalanceDue()),
+                            p == null ? "" : plain(p.getRefundDue()), b.getCreatedAt().format(CSV_TIME)))
                     .append(CSV_EOL);
         }
         return sb.toString();

@@ -1,5 +1,6 @@
 package com.scooterrentalkandy.spring.dto;
 
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -75,13 +76,19 @@ public final class BookingDtos {
     public record RentalBreakdown(long chargedDays, long extraHours, BigDecimal includedKm, BigDecimal excessKm) {
     }
 
+    /**
+     * {@code method}: CARD (payment provider) or CASH (received at the rental counter and recorded by an admin).
+     * {@code refundDue}: CASH only, cash still to hand back to the customer; null when none.
+     */
     public record PaymentSummary(
             PaymentStatus status,
             BigDecimal amount,
             BigDecimal balanceDue,
             String cardLast4,
             String failureReason,
-            LocalDateTime paidAt) {
+            LocalDateTime paidAt,
+            PaymentMethod method,
+            BigDecimal refundDue) {
     }
 
     /**

@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.config.AppProperties;
+import com.scooterrentalkandy.spring.dto.BillingDtos.CashTotals;
 import com.scooterrentalkandy.spring.dto.BillingDtos.InvoiceResponse;
 import com.scooterrentalkandy.spring.dto.BookingDtos.GearLine;
 import com.scooterrentalkandy.spring.exception.ApiException;
@@ -14,8 +15,11 @@ import com.scooterrentalkandy.spring.mappers.InvoiceMapper;
 import com.scooterrentalkandy.spring.entity.Booking;
 import com.scooterrentalkandy.spring.entity.Invoice;
 import com.scooterrentalkandy.spring.entity.Payment;
+import com.scooterrentalkandy.spring.entity.PaymentTransaction;
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.repository.InvoiceRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
+import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
 import com.scooterrentalkandy.spring.security.AuthUser;
 import com.scooterrentalkandy.spring.services.PricingService.FinalBill;
 import org.springframework.stereotype.Service;
@@ -27,12 +31,15 @@ public class BillingService {
 
     private final InvoiceRepository invoices;
     private final PaymentRepository payments;
+    private final PaymentTransactionRepository transactions;
     private final Clock clock;
     private final String currency;
 
-    public BillingService(InvoiceRepository invoices, PaymentRepository payments, Clock clock, AppProperties props) {
+    public BillingService(InvoiceRepository invoices, PaymentRepository payments,
+                          PaymentTransactionRepository transactions, Clock clock, AppProperties props) {
         this.invoices = invoices;
         this.payments = payments;
+        this.transactions = transactions;
         this.clock = clock;
         this.currency = props.billing().currency();
     }
@@ -92,7 +99,7 @@ public class BillingService {
     public List<InvoiceResponse> forBooking(UUID bookingId) {
         Payment payment = payment(bookingId);
         return invoices.findByBooking_BookingIdOrderByIssuedAtAsc(bookingId).stream()
-                .map(i -> InvoiceMapper.toResponse(i, true, payment)).toList();
+                .map(i -> InvoiceMapper.toResponse(i, true, payment, cashTotals(payment))).toList();
     }
 
     @Transactional(readOnly = true)
@@ -101,13 +108,37 @@ public class BillingService {
         if (!user.isAdmin() && !inv.getBooking().getUser().getUserId().equals(user.id())) {
             throw ApiException.forbidden();
         }
-        return InvoiceMapper.toResponse(inv, true, payment(inv.getBooking().getBookingId()));
+        Payment payment = payment(inv.getBooking().getBookingId());
+        return InvoiceMapper.toResponse(inv, true, payment, cashTotals(payment));
     }
 
     @Transactional(readOnly = true)
     public List<InvoiceResponse> recent() {
         return invoices.findTop300ByOrderByIssuedAtDesc().stream()
-                .map(i -> InvoiceMapper.toResponse(i, false, payment(i.getBooking().getBookingId()))).toList();
+                .map(i -> {
+                    Payment payment = payment(i.getBooking().getBookingId());
+                    return InvoiceMapper.toResponse(i, false, payment, cashTotals(payment));
+                }).toList();
+    }
+
+    /** For a cash payment: the cash recorded as received (initial and balance) and as handed back. */
+    private CashTotals cashTotals(Payment payment) {
+        if (payment == null || payment.getMethod() != PaymentMethod.CASH) {
+            return null;
+        }
+        BigDecimal received = BigDecimal.ZERO.setScale(2);
+        BigDecimal refunded = BigDecimal.ZERO.setScale(2);
+        for (PaymentTransaction t : transactions.findByPayment_PaymentIdOrderByCreatedAtAsc(payment.getPaymentId())) {
+            if (t.getStatus() != PaymentTransaction.Status.SUCCESS) {
+                continue;
+            }
+            if (t.getKind() == PaymentTransaction.Kind.REFUND) {
+                refunded = refunded.add(t.getAmount());
+            } else {
+                received = received.add(t.getAmount());
+            }
+        }
+        return new CashTotals(received, refunded);
     }
 
     private Payment payment(UUID bookingId) {

@@ -22,11 +22,12 @@ public final class PaymentMapper {
         return new PaymentResponse(p.getPaymentId(), b.getBookingId(), includeBooking ? b.getReference() : null,
                 includeBooking ? b.getUser().getFullName() : null, p.getAmount(), p.getMethod(), p.getStatus(),
                 p.getProvider(), p.getStripePaymentId(), p.getCardLast4(), p.getBalanceDue(), p.getFailureReason(),
-                p.getPaidAt(), p.getCreatedAt(), transactions);
+                p.getPaidAt(), p.getCreatedAt(), transactions, p.getRefundDue());
     }
 
     public static TransactionResponse toResponse(PaymentTransaction t) {
         return new TransactionResponse(t.getPaymentTransactionId(), t.getKind(), t.getProviderRef(), t.getAmount(), t.getStatus(),
-                t.getFailureReason(), t.getCreatedAt());
+                t.getFailureReason(), t.getCreatedAt(),
+                t.getRecordedBy() == null ? null : t.getRecordedBy().getFullName());
     }
 }

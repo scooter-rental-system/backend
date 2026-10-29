@@ -8,6 +8,9 @@ import java.util.UUID;
 
 import com.scooterrentalkandy.spring.entity.PaymentTransaction;
 import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.NotNull;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.PaymentTransaction;
@@ -52,11 +55,24 @@ public final class PaymentDtos {
             String failureReason,
             LocalDateTime paidAt,
             LocalDateTime createdAt,
-            /** Provider calls for this payment; included for a single booking, omitted (null) in lists. */
-            List<TransactionResponse> transactions) {
+            /** Provider calls (or recorded cash) for this payment; included for a single booking, null in lists. */
+            List<TransactionResponse> transactions,
+            /** CASH only: cash still to hand back to the customer; null when none. */
+            BigDecimal refundDue) {
     }
 
+    /**
+     * An admin confirms cash handed over at the rental counter (received, or given back). {@code amount} is the
+     * amount the admin saw on the booking; it must be the amount due, so a confirmation from an out-of-date screen
+     * is refused.
+     */
+    public record CashConfirmRequest(
+            @NotNull @DecimalMin("0.01") @Digits(integer = 8, fraction = 2) BigDecimal amount) {
+    }
+
+    /** {@code recordedBy}: the admin who recorded a cash receipt or refund; null for provider transactions. */
     public record TransactionResponse(UUID id, PaymentTransaction.Kind kind, String providerRef, BigDecimal amount,
-                                      PaymentTransaction.Status status, String failureReason, LocalDateTime createdAt) {
+                                      PaymentTransaction.Status status, String failureReason, LocalDateTime createdAt,
+                                      String recordedBy) {
     }
 }
