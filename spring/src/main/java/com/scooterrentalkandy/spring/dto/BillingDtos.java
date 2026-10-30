@@ -53,7 +53,13 @@ public final class BillingDtos {
              * everything refunded so far (a refund still due is not included).
              */
             BigDecimal amountReceived,
-            BigDecimal amountRefunded) {
+            BigDecimal amountRefunded,
+            /**
+             * Every way money was received, in order and once each, e.g. [QR_TRANSFER, CASH] when the final balance
+             * was paid in cash after a QR payment; {@code paymentMethod} stays the first. Empty when there is no
+             * payment.
+             */
+            List<PaymentMethod> paymentMethods) {
     }
 
     /** What an admin recorded or approved as received, and as refunded, for a booking paid outside the provider. */

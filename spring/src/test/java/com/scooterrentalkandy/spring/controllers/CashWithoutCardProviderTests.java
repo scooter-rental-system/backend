@@ -2,6 +2,7 @@ package com.scooterrentalkandy.spring.controllers;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -19,6 +20,7 @@ import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
 import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
+import com.scooterrentalkandy.spring.repository.PaymentReceiptRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
@@ -33,17 +35,19 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.request.AbstractMockHttpServletRequestBuilder;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Cash without PAYMENTS_PROVIDER (BE-044): no payment gateway exists in this context, card payments still answer
- * 503 exactly as before, and the whole cash lifecycle (choose cash, admin confirms, rental, end, final cash balance)
- * still works because it never needs a provider. Embedded PostgreSQL; each test rolls back.
+ * 503 exactly as before, and a rental paid by bank transfer and settled in cash at the counter (transfer approved,
+ * rental, end, final cash balance recorded by an admin) still works because it never needs a provider. Embedded
+ * PostgreSQL; each test rolls back.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -75,6 +79,9 @@ class CashWithoutCardProviderTests {
     private PaymentRepository payments;
 
     @Autowired
+    private PaymentReceiptRepository receipts;
+
+    @Autowired
     private JwtService jwt;
 
     private User saveUser(Role role) {
@@ -90,7 +97,7 @@ class CashWithoutCardProviderTests {
         return users.saveAndFlush(u);
     }
 
-    private MockHttpServletRequestBuilder as(User user, MockHttpServletRequestBuilder request) {
+    private <B extends AbstractMockHttpServletRequestBuilder<B>> B as(User user, B request) {
         return request.header(HttpHeaders.AUTHORIZATION, "Bearer " + jwt.issue(user));
     }
 
@@ -134,19 +141,33 @@ class CashWithoutCardProviderTests {
         assertThat(payments.findByBooking_BookingId(id)).isEmpty();
     }
 
+    /** Bank transfer on, with its details set. */
+    private void enableBankTransfer(User admin) throws Exception {
+        mvc.perform(as(admin, put("/api/admin/payment-settings")).contentType(MediaType.APPLICATION_JSON).content("""
+                        {"qrEnabled": false, "bankEnabled": true, "bankName": "Bank of Ceylon",
+                         "bankAccountHolder": "Scooter Rent Kandy", "bankAccountNumber": "0001234567",
+                         "bankBranch": "Kandy"}"""))
+                .andExpect(status().isOk());
+    }
+
     @Test
-    void theWholeCashLifecycleWorksWithoutAProvider() throws Exception {
+    void aTransferRentalSettledInCashWorksWithoutAProvider() throws Exception {
         User customer = saveUser(Role.USER);
         User admin = saveUser(Role.ADMIN);
+        enableBankTransfer(admin);
         UUID id = signedBooking(customer);
 
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/cash"))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.payment.method").value("CASH"))
-                .andExpect(jsonPath("$.status").value("PENDING"));
-        mvc.perform(as(admin, post("/api/admin/bookings/" + id + "/cash/initial"))
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"amount\": 250}"))
+        mvc.perform(as(customer, post("/api/bookings/" + id + "/transfer")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"method\": \"BANK_TRANSFER\"}")).andExpect(status().isOk());
+        mvc.perform(as(customer, multipart("/api/bookings/" + id + "/receipts")
+                        .file(new MockMultipartFile("receipt", "receipt.png", "image/png", RepairPhotoTests.PNG))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ACTIVE"));
+                .andExpect(jsonPath("$.status").value("PENDING"));
+        UUID receiptId = receipts.findPendingByBookingId(id).orElseThrow().getPaymentReceiptId();
+        mvc.perform(as(admin, post("/api/admin/payment-receipts/" + receiptId + "/approve"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"amount\": 250}"))
+                .andExpect(status().isOk());
+        assertThat(bookings.findById(id).orElseThrow().getStatus()).isEqualTo(BookingStatus.ACTIVE);
 
         Booking b = bookings.findById(id).orElseThrow();
         b.setStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30)); // 1 day + 3 hours = 3,250
@@ -161,14 +182,17 @@ class CashWithoutCardProviderTests {
                 .andExpect(jsonPath("$.totalCost").value(3250.00));
 
         assertThat(bookings.findById(id).orElseThrow().getStatus()).isEqualTo(BookingStatus.COMPLETED);
-        assertThat(payments.findByBooking_BookingId(id).orElseThrow().getMethod()).isEqualTo(PaymentMethod.CASH);
+        assertThat(payments.findByBooking_BookingId(id).orElseThrow().getMethod())
+                .isEqualTo(PaymentMethod.BANK_TRANSFER);
     }
 
     @Test
-    void cancellingAPendingCashBookingNeedsNoProvider() throws Exception {
+    void cancellingAPendingTransferBookingNeedsNoProvider() throws Exception {
         User customer = saveUser(Role.USER);
+        enableBankTransfer(saveUser(Role.ADMIN));
         UUID id = signedBooking(customer);
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/cash"))).andExpect(status().isOk());
+        mvc.perform(as(customer, post("/api/bookings/" + id + "/transfer")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"method\": \"BANK_TRANSFER\"}")).andExpect(status().isOk());
 
         mvc.perform(as(customer, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CANCELLED"));

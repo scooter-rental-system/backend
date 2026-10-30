@@ -16,9 +16,11 @@ public final class InvoiceMapper {
     /**
      * {@code payment}: the booking's payment, for its status and the unpaid balance of a FINAL invoice.
      * {@code cash}: for a payment in cash, by QR payment or by bank transfer, the amounts recorded as received and
-     * refunded; otherwise null. The cash fields stay for cash payments only.
+     * refunded; otherwise null. The cash fields stay for cash payments only. {@code methods}: every way money was
+     * received for the booking, in order (see BillingService.paymentMethods).
      */
-    public static InvoiceResponse toResponse(Invoice i, boolean withLines, Payment payment, CashTotals cash) {
+    public static InvoiceResponse toResponse(Invoice i, boolean withLines, Payment payment, CashTotals cash,
+                                             List<PaymentMethod> methods) {
         boolean finalManual = cash != null && i.getKind() == Invoice.Kind.FINAL;
         boolean finalCash = finalManual && payment.getMethod() == PaymentMethod.CASH;
         var b = i.getBooking();
@@ -35,6 +37,6 @@ public final class InvoiceMapper {
                 i.getCurrency(), i.getSubtotal(), i.getTax(), i.getTotal(), i.getIssuedAt(), lines,
                 payment == null ? null : payment.getMethod(), finalCash ? cash.received() : null,
                 finalCash ? cash.refunded() : null, finalManual ? payment.getRefundDue() : null,
-                finalManual ? cash.received() : null, finalManual ? cash.refunded() : null);
+                finalManual ? cash.received() : null, finalManual ? cash.refunded() : null, methods);
     }
 }

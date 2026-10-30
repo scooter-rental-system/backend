@@ -52,11 +52,12 @@ public class ReportService {
     private final Clock clock;
     private final PricingService pricing;
     private final InvoiceRepository invoices;
+    private final BillingService billing;
     private final String currency;
 
     public ReportService(BookingRepository bookings, PaymentRepository payments, ScooterRepository scooters,
                          MaintenanceRepository maintenance, UserRepository users, Clock clock, PricingService pricing,
-                         InvoiceRepository invoices, AppProperties props) {
+                         InvoiceRepository invoices, BillingService billing, AppProperties props) {
         this.bookings = bookings;
         this.payments = payments;
         this.scooters = scooters;
@@ -65,6 +66,7 @@ public class ReportService {
         this.clock = clock;
         this.pricing = pricing;
         this.invoices = invoices;
+        this.billing = billing;
         this.currency = props.billing().currency();
     }
 
@@ -179,7 +181,7 @@ public class ReportService {
             "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)", "Excess Distance (km)",
             "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)", "Rental Subtotal (LKR)",
             "Approved Repair Reimbursement (LKR)", "Total Amount (LKR)",
-            "Amount Paid (LKR)", "Payment Method", "Payment Status", "Balance Due (LKR)", "Refund Due (LKR)",
+            "Amount Paid (LKR)", "Payment Methods", "Payment Status", "Balance Due (LKR)", "Refund Due (LKR)",
             "Created At");
 
     /** Spreadsheet-friendly local date and time (Sri Lanka time, as stored). */
@@ -195,7 +197,8 @@ public class ReportService {
      * have ended, from the shared PricingService with the scooter's and gear's rates (rates are not stored on bookings,
      * SDS 2.4); the rental subtotal and the approved repair reimbursement come from the final invoice (0 when none was
      * approved), and the total is the billed amount after that reimbursement; total, paid and balance due are the
-     * billed amounts. Text cells are quoted and protected against
+     * billed amounts. Payment Methods lists every way money was received, in order (e.g. "QR_TRANSFER + CASH" when
+     * the final balance was paid in cash after a QR payment). Text cells are quoted and protected against
      * spreadsheet formula injection; numbers are plain.
      */
     @Transactional(readOnly = true)
@@ -236,7 +239,8 @@ public class ReportService {
                             plain(s.getPerKmRate()), bill == null ? "" : plain(bill.distanceCost()), csv(gear),
                             bill == null ? "" : plain(bill.gearCost()), plain(subtotal), plain(reimbursement),
                             plain(total),
-                            p == null ? "" : plain(p.getAmount()), p == null ? "" : p.getMethod().name(),
+                            p == null ? "" : plain(p.getAmount()), p == null ? "" : csv(billing.paymentMethods(p).stream().map(Enum::name)
+                                    .collect(Collectors.joining(" + "))),
                             p == null ? "" : p.getStatus().name(), p == null ? "" : plain(p.getBalanceDue()),
                             p == null ? "" : plain(p.getRefundDue()), b.getCreatedAt().format(CSV_TIME)))
                     .append(CSV_EOL);

@@ -563,7 +563,6 @@ class ManualPaymentTests extends PostgresIntegrationTest {
         submit(id).andExpect(status().isOk());
 
         choose(id, PaymentMethod.BANK_TRANSFER).andExpect(status().isConflict());
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/cash"))).andExpect(status().isConflict());
         mvc.perform(as(customer, post("/api/bookings/" + id + "/payment-intent"))).andExpect(status().isConflict());
         assertThat(payment(id).getMethod()).isEqualTo(PaymentMethod.QR_TRANSFER);
         assertNoProviderCalls();
@@ -726,26 +725,23 @@ class ManualPaymentTests extends PostgresIntegrationTest {
     }
 
     @Test
-    void aCashBookingMayPayItsBalanceByBankTransfer() throws Exception {
-        UUID id = signedBooking();
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/cash"))).andExpect(status().isOk());
-        mvc.perform(json(as(admin, post("/api/admin/bookings/" + id + "/cash/initial")), "{\"amount\": 250}"))
-                .andExpect(status().isOk());
-        Booking b = bookings.findById(id).orElseThrow();
-        b.setStartTime(LocalDateTime.now().minusMinutes(73 * 60 + 30));
-        bookings.saveAndFlush(b);
+    void aQrBookingMayPayItsBalanceByBankTransferButNotInCashWhileTheReceiptWaits() throws Exception {
+        UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
         end(id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
 
-        submit(customer, id, png(), "BANK_TRANSFER", "TXN-CASH-BAL").andExpect(status().isOk());
+        submit(customer, id, png(), "BANK_TRANSFER", "TXN-BAL").andExpect(status().isOk());
         // The counter cannot record the same balance while the transfer waits for verification.
         mvc.perform(json(as(admin, post("/api/admin/bookings/" + id + "/cash/balance")), "{\"amount\": 7750}"))
                 .andExpect(status().isConflict());
-        approve(admin, pendingReceipt(id), "7750").andExpect(status().isOk());
+        // Rejected (the money never arrived): the customer pays at the counter instead.
+        reject(admin, pendingReceipt(id), "Transaction not found").andExpect(status().isOk());
+        mvc.perform(json(as(admin, post("/api/admin/bookings/" + id + "/cash/balance")), "{\"amount\": 7750}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"));
 
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.COMPLETED);
         assertThat(recorded(id)).extracting(PaymentTransaction::getMethod)
-                .containsExactly(PaymentMethod.CASH, PaymentMethod.BANK_TRANSFER);
-        assertThat(payment(id).getMethod()).isEqualTo(PaymentMethod.CASH);
+                .containsExactly(PaymentMethod.QR_TRANSFER, PaymentMethod.CASH);
+        assertThat(payment(id).getMethod()).isEqualTo(PaymentMethod.QR_TRANSFER);
     }
 
     @Test

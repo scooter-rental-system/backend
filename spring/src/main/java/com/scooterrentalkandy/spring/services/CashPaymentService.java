@@ -20,7 +20,6 @@ import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.AuthUser;
 import com.scooterrentalkandy.spring.services.PaymentEvents.BalancePaid;
 import com.scooterrentalkandy.spring.services.PaymentEvents.CashRefunded;
-import com.scooterrentalkandy.spring.services.PaymentEvents.InitialPaymentSucceeded;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -29,22 +28,22 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Cash at the rental counter (BE-044). A cash payment is the booking's Payment row with method CASH and no provider,
- * payment intent or card details. The customer only chooses cash; the money counts as received only when an admin
- * records it, and cash handed back only when an admin records that too. Each amount an admin records is a
- * PaymentTransaction naming the admin, with no provider reference. Nothing here calls a payment provider.
+ * Cash at the rental counter (BE-044). Cash is never a checkout option: the customer pays the initial charge online
+ * (card, QR payment or bank transfer), and only an admin records cash, when the customer hands it over at the counter.
+ * That is the final balance of a rental first paid by QR payment or bank transfer, and cash handed back. Each amount an
+ * admin records is a PaymentTransaction with method CASH naming the admin and no provider reference, next to the
+ * earlier transactions, which keep their own method. Nothing here calls a payment provider. Bookings paid in cash
+ * before cash left the checkout (Payment.method CASH) are still settled and refunded here.
  *
- * <p>The booking lifecycle is the one card payments use: recording the initial cash publishes
- * {@link InitialPaymentSucceeded} (the booking becomes ACTIVE), recording the final balance publishes
- * {@link BalancePaid} and recording a refund owed at the end publishes {@link CashRefunded} (the rental completes).
+ * <p>The booking lifecycle is the one card payments use: recording the final balance publishes {@link BalancePaid}
+ * and recording a refund owed at the end publishes {@link CashRefunded} (the rental completes).
  *
  * <p>The settlement at the end of a rental ({@link #settleAtEnd}) and the refund owed after a cancellation serve
- * every manual method (cash, QR payment, bank transfer): the balance or refund due is kept on the payment. A balance
- * due on a booking first paid by QR payment or bank transfer may also be paid in cash here; each recorded amount
- * names its own method.
+ * every manual method (cash, QR payment, bank transfer): the balance or refund due is kept on the payment.
  *
- * <p>Every confirmation names the amount the admin saw; any other amount is refused, since the screen was out of
- * date. Repeating a confirmation that is already recorded changes nothing. Lock order as in {@link PaymentService}:
+ * <p>The amount recorded is always the balance the server holds; the admin's request names the amount they saw and any
+ * other amount is refused, since the screen was out of date. Repeating a confirmation that is already recorded changes
+ * nothing. Lock order as in {@link PaymentService}:
  * the booking row, then the payment row.
  */
 @Service
@@ -57,8 +56,6 @@ public class CashPaymentService {
     private final PaymentTransactionRepository transactions;
     private final PaymentReceiptRepository receipts;
     private final UserRepository users;
-    private final PaymentService cardPayments;
-    private final PricingService pricing;
     private final NotificationService notifications;
     private final ApplicationEventPublisher events;
     private final Clock clock;
@@ -66,112 +63,31 @@ public class CashPaymentService {
 
     public CashPaymentService(BookingRepository bookings, PaymentRepository payments,
                               PaymentTransactionRepository transactions, PaymentReceiptRepository receipts,
-                              UserRepository users,
-                              PaymentService cardPayments, PricingService pricing, NotificationService notifications,
+                              UserRepository users, NotificationService notifications,
                               ApplicationEventPublisher events, Clock clock, AppProperties props) {
         this.bookings = bookings;
         this.payments = payments;
         this.transactions = transactions;
         this.receipts = receipts;
         this.users = users;
-        this.cardPayments = cardPayments;
-        this.pricing = pricing;
         this.notifications = notifications;
         this.events = events;
         this.clock = clock;
         this.currency = props.billing().currency();
     }
 
-    // ---------------------------------------------------------------- customer
-
-    /**
-     * The customer chooses to pay the initial charge in cash at the counter. The payment stays PENDING and the
-     * booking awaiting payment until an admin records the cash. An open card attempt is closed first. Choosing cash
-     * again only refreshes the amount.
-     */
-    @Transactional
-    public void choose(UUID bookingId, AuthUser user) {
-        Booking b = lockBooking(bookingId);
-        if (!b.getUser().getUserId().equals(user.id())) {
-            if (user.isAdmin()) {
-                throw ApiException.forbidden();
-            }
-            throw ApiException.notFound("Booking");
-        }
-        if (b.getStatus() != BookingStatus.PENDING) {
-            throw ApiException.conflict("This booking is not awaiting payment (status " + b.getStatus() + ")");
-        }
-        if (!b.isContractSigned()) {
-            throw ApiException.badRequest("Please sign the rental agreement before paying");
-        }
-        BigDecimal amount = pricing.initialCharge(b.getScooter(), PricingService.selectionsOf(b)).total();
-        Payment p = payments.findByBookingIdForUpdate(bookingId).orElse(null);
-        boolean alreadyChosen = p != null && p.getMethod() == PaymentMethod.CASH
-                && p.getStatus() == PaymentStatus.PENDING;
-        if (p == null) {
-            p = new Payment();
-            p.setBooking(b);
-        } else if (p.getStatus() == PaymentStatus.SUCCESS || p.getStatus() == PaymentStatus.REFUNDED) {
-            throw ApiException.conflict("This booking has already been paid");
-        } else {
-            requireNoPendingReceipt(bookingId);
-            cardPayments.closeCardAttempt(p);
-        }
-        p.setMethod(PaymentMethod.CASH);
-        p.setProvider(null);
-        p.setStripePaymentId(null);
-        p.setPaymentMethodRef(null);
-        p.setCardLast4(null);
-        p.setBalanceIntentId(null);
-        p.setBalanceDue(null);
-        p.setRefundDue(null);
-        p.setAmount(amount);
-        p.setStatus(PaymentStatus.PENDING);
-        p.setFailureReason(null);
-        payments.save(p);
-        if (!alreadyChosen) {
-            notifications.notifyAdmins("Cash payment pending " + b.getReference(), b.getUser().getFullName()
-                    + " will pay " + money(amount) + " in cash at the rental counter for " + b.getReference()
-                    + ". Confirm it on the booking when the cash is received.");
-        }
-    }
-
     // ---------------------------------------------------------------- admin confirmations
 
-    /** An admin records the initial cash as received; the booking becomes ACTIVE through the normal lifecycle. */
-    @Transactional
-    public void confirmInitial(UUID bookingId, BigDecimal amount, AuthUser admin) {
-        Booking b = lockBooking(bookingId);
-        Payment p = cashPayment(bookingId);
-        if (p.getStatus() == PaymentStatus.SUCCESS || p.getStatus() == PaymentStatus.REFUNDED) {
-            return; // already recorded
-        }
-        if (b.getStatus() != BookingStatus.PENDING || p.getStatus() != PaymentStatus.PENDING) {
-            throw ApiException.conflict("This booking is " + b.getStatus().name().toLowerCase()
-                    + ", so cash can no longer be accepted for it");
-        }
-        if (!b.isContractSigned()) {
-            throw ApiException.badRequest("The customer must sign the rental agreement before paying");
-        }
-        requireAmount(amount, p.getAmount());
-        p.setStatus(PaymentStatus.SUCCESS);
-        p.setPaidAt(now());
-        p.setFailureReason(null);
-        record(p, PaymentTransaction.Kind.INITIAL, p.getAmount(), admin);
-        log.info("Cash {} received for booking {} recorded by admin {}", p.getAmount(), b.getReference(), admin.id());
-        events.publishEvent(new InitialPaymentSucceeded(bookingId));
-    }
-
     /**
-     * An admin records the remaining balance as received in cash at the counter; the rental completes. Also for a
-     * booking first paid by QR payment or bank transfer, unless a transfer receipt for the balance is waiting.
+     * An admin records the remaining balance as received in cash at the counter; the rental completes. For a booking
+     * first paid by QR payment or bank transfer (or in cash before cash left the checkout), once the final bill is
+     * fixed and only while no transfer receipt for the balance is waiting. The amount recorded is the server's balance.
      */
     @Transactional
     public void confirmBalance(UUID bookingId, BigDecimal amount, AuthUser admin) {
         Booking b = lockBooking(bookingId);
         Payment p = manualPayment(bookingId);
-        if (p.getBalanceDue() == null && b.getStatus() == BookingStatus.COMPLETED
-                && recorded(p, PaymentTransaction.Kind.BALANCE)) {
+        if (p.getBalanceDue() == null && b.getStatus() == BookingStatus.COMPLETED && cashBalanceRecorded(p)) {
             return; // already recorded
         }
         if (b.getStatus() != BookingStatus.ACTIVE || b.getEndedAt() == null || p.getBalanceDue() == null) {
@@ -316,11 +232,12 @@ public class CashPaymentService {
         return p;
     }
 
-    /** The booking's payment, locked; it must be paid at the counter or by transfer. */
+    /** The booking's payment, locked; it must be paid by QR payment or bank transfer (or in cash, earlier). */
     private Payment manualPayment(UUID bookingId) {
         Payment p = payments.findByBookingIdForUpdate(bookingId).orElse(null);
         if (p == null || !p.getMethod().isManual()) {
-            throw ApiException.conflict("This booking is not being paid in cash");
+            throw ApiException.conflict("Cash at the counter can be recorded only for the final balance of a rental "
+                    + "paid by QR payment or bank transfer");
         }
         return p;
     }
@@ -342,6 +259,13 @@ public class CashPaymentService {
 
     private boolean recorded(Payment p, PaymentTransaction.Kind kind) {
         return transactions.countByPayment_PaymentIdAndKind(p.getPaymentId(), kind) > 0;
+    }
+
+    /** The final balance was recorded as cash (not approved as a QR payment or bank transfer). */
+    private boolean cashBalanceRecorded(Payment p) {
+        return transactions.findByPayment_PaymentIdOrderByCreatedAtAsc(p.getPaymentId()).stream()
+                .anyMatch(t -> t.getKind() == PaymentTransaction.Kind.BALANCE && t.getMethod() == PaymentMethod.CASH
+                        && t.getStatus() == PaymentTransaction.Status.SUCCESS);
     }
 
     /** Audit trail: the cash an admin recorded, with no provider reference. */

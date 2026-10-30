@@ -21,6 +21,7 @@ import com.scooterrentalkandy.spring.entity.PaymentTransaction;
 import com.scooterrentalkandy.spring.entity.Scooter;
 import com.scooterrentalkandy.spring.entity.User;
 import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
@@ -186,11 +187,50 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
         bookings.saveAndFlush(b);
     }
 
-    private UUID cashRental(long minutesAgo) throws Exception {
+    /** The initial LKR 250 paid by QR payment and approved, so the booking is ACTIVE and unstarted. */
+    private UUID paidByQr() throws Exception {
         UUID id = signedBooking();
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/cash"))).andExpect(status().isOk());
-        cash(admin, id, "initial", "250").andExpect(status().isOk());
+        mvc.perform(json(as(customer, post("/api/bookings/" + id + "/transfer")), "{\"method\": \"QR_TRANSFER\"}"))
+                .andExpect(status().isOk());
+        submit(id, null).andExpect(status().isOk());
+        approve(pendingReceipt(id), "250").andExpect(status().isOk());
+        return id;
+    }
+
+    /** As {@link #paidByQr}; the rental started {@code minutesAgo} minutes ago. */
+    private UUID qrRental(long minutesAgo) throws Exception {
+        UUID id = paidByQr();
         startedMinutesAgo(id, minutesAgo);
+        return id;
+    }
+
+    /**
+     * A rental paid in cash at the counter before cash left the checkout (Payment.method CASH), written directly
+     * since no endpoint creates such a payment any more.
+     */
+    private UUID earlierCashRental(long minutesAgo) throws Exception {
+        UUID id = signedBooking();
+        Booking b = bookings.findById(id).orElseThrow();
+        Payment p = new Payment();
+        p.setBooking(b);
+        p.setMethod(PaymentMethod.CASH);
+        p.setAmount(new BigDecimal("250.00"));
+        p.setStatus(PaymentStatus.SUCCESS);
+        p.setPaidAt(LocalDateTime.now().minusDays(1));
+        payments.save(p);
+        PaymentTransaction t = new PaymentTransaction();
+        t.setPayment(p);
+        t.setKind(PaymentTransaction.Kind.INITIAL);
+        t.setMethod(PaymentMethod.CASH);
+        t.setAmount(new BigDecimal("250.00"));
+        t.setStatus(PaymentTransaction.Status.SUCCESS);
+        t.setRecordedBy(admin);
+        t.setCreatedAt(LocalDateTime.now().minusDays(1));
+        transactions.save(t);
+        b.setStatus(BookingStatus.ACTIVE);
+        b.getScooter().setStatus(ScooterStatus.RENTED);
+        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
+        bookings.saveAndFlush(b);
         return id;
     }
 
@@ -242,7 +282,7 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
 
     @Test
     void anUnresolvedRepairWithAnApprovedAmountBlocksTheFinalBillForTheAdminAndTheCustomer() throws Exception {
-        UUID id = cashRental(30);
+        UUID id = qrRental(30);
         String repair = report(id, true, "150");
         review(repair, "REPORTED", "100").andExpect(status().isOk());
 
@@ -263,7 +303,7 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
 
     @Test
     void aRepairTheCustomerDidNotArrangeThemselvesDoesNotBlockTheFinalBill() throws Exception {
-        UUID id = cashRental(30);
+        UUID id = qrRental(30);
         report(id, false, "null"); // assistance only: no reimbursement can be approved on it
 
         end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"));
@@ -273,7 +313,7 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
 
     @Test
     void cashOverpaymentAfterTheApprovedReimbursementLeavesARefundDueUntilTheAdminHandsItBack() throws Exception {
-        UUID id = cashRental(30);
+        UUID id = earlierCashRental(30);
         review(report(id, true, "150"), "RESOLVED", "100").andExpect(status().isOk());
 
         end(admin, id).andExpect(status().isOk())
@@ -309,7 +349,7 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
 
     @Test
     void aCompletedRentalCannotBeFinalisedOrSettledAgain() throws Exception {
-        UUID id = cashRental(90); // 2 hours: 500, less 250 received = 250 due
+        UUID id = qrRental(90); // 2 hours: 500, less 250 received = 250 due
         end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(250.00));
         cash(admin, id, "balance", "250").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"));
 
@@ -360,11 +400,6 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
 
     @Test
     void aCancelledBookingCannotBePaidOrActivated() throws Exception {
-        UUID byCash = signedBooking();
-        mvc.perform(as(customer, post("/api/bookings/" + byCash + "/cash"))).andExpect(status().isOk());
-        mvc.perform(as(customer, post("/api/bookings/" + byCash + "/cancel"))).andExpect(status().isOk());
-        cash(admin, byCash, "initial", "250").andExpect(status().isConflict());
-
         UUID byTransfer = signedBooking();
         mvc.perform(json(as(customer, post("/api/bookings/" + byTransfer + "/transfer")),
                 "{\"method\": \"BANK_TRANSFER\"}")).andExpect(status().isOk());
@@ -372,14 +407,13 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
         submit(byTransfer, null).andExpect(status().isConflict());
         mvc.perform(json(as(customer, post("/api/bookings/" + byTransfer + "/transfer")),
                 "{\"method\": \"QR_TRANSFER\"}")).andExpect(status().isConflict());
+        cash(admin, byTransfer, "balance", "250").andExpect(status().isConflict());
 
-        for (UUID id : List.of(byCash, byTransfer)) {
-            Booking b = booking(id);
-            assertThat(b.getStatus()).isEqualTo(BookingStatus.CANCELLED);
-            assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
-            assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.FAILED);
-            assertThat(recorded(id)).isEmpty();
-        }
+        Booking b = booking(byTransfer);
+        assertThat(b.getStatus()).isEqualTo(BookingStatus.CANCELLED);
+        assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
+        assertThat(payment(byTransfer).getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(recorded(byTransfer)).isEmpty();
     }
 
     // ---------------------------------------------------------------- GPS
@@ -387,10 +421,12 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
     @Test
     void theRiderReportsLocationOnlyDuringTheirOwnPaidRentalInProgress() throws Exception {
         UUID id = signedBooking();
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/cash"))).andExpect(status().isOk());
-        location(customer, id).andExpect(status().isConflict()); // not paid yet
+        mvc.perform(json(as(customer, post("/api/bookings/" + id + "/transfer")), "{\"method\": \"QR_TRANSFER\"}"))
+                .andExpect(status().isOk());
+        submit(id, null).andExpect(status().isOk());
+        location(customer, id).andExpect(status().isConflict()); // not paid yet: the receipt is not approved
 
-        cash(admin, id, "initial", "250").andExpect(status().isOk());
+        approve(pendingReceipt(id), "250").andExpect(status().isOk());
         startedMinutesAgo(id, 30);
         location(customer, id).andExpect(status().isAccepted());
         location(saveUser(Role.USER), id).andExpect(status().isNotFound());

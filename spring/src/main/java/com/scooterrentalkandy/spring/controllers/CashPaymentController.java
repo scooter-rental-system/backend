@@ -14,8 +14,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Cash at the rental counter. The customer only chooses cash; the confirmations are under /api/admin, so only
- * ADMIN and SUPER_ADMIN can record cash as received or handed back. Each answers with the updated booking.
+ * Cash at the rental counter. Cash is not a checkout option, so the customer has no cash endpoint; the confirmations
+ * are under /api/admin, so only ADMIN and SUPER_ADMIN can record cash as received or handed back. Each answers with
+ * the updated booking.
  */
 @RestController
 public class CashPaymentController {
@@ -28,22 +29,7 @@ public class CashPaymentController {
         this.bookings = bookings;
     }
 
-    /** The customer will pay the initial charge in cash; the booking waits for an admin to record it. */
-    @PostMapping("/api/bookings/{id}/cash")
-    public BookingResponse choose(@PathVariable UUID id, @CurrentUser AuthUser user) {
-        cash.choose(id, user);
-        return bookings.get(id, user);
-    }
-
-    /** The initial cash was received; the booking becomes active. */
-    @PostMapping("/api/admin/bookings/{id}/cash/initial")
-    public BookingResponse confirmInitial(@PathVariable UUID id, @Valid @RequestBody CashConfirmRequest req,
-                                          @CurrentUser AuthUser admin) {
-        cash.confirmInitial(id, req.amount(), admin);
-        return bookings.get(id, admin);
-    }
-
-    /** The remaining cash balance was received at the end of the rental; the rental completes. */
+    /** The remaining balance was received in cash at the end of the rental; the rental completes. */
     @PostMapping("/api/admin/bookings/{id}/cash/balance")
     public BookingResponse confirmBalance(@PathVariable UUID id, @Valid @RequestBody CashConfirmRequest req,
                                           @CurrentUser AuthUser admin) {

@@ -12,10 +12,12 @@ import com.scooterrentalkandy.spring.dto.BillingDtos.InvoiceResponse;
 import com.scooterrentalkandy.spring.dto.BookingDtos.GearLine;
 import com.scooterrentalkandy.spring.exception.ApiException;
 import com.scooterrentalkandy.spring.mappers.InvoiceMapper;
+import com.scooterrentalkandy.spring.mappers.PaymentMapper;
 import com.scooterrentalkandy.spring.entity.Booking;
 import com.scooterrentalkandy.spring.entity.Invoice;
 import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.PaymentTransaction;
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.repository.InvoiceRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
@@ -98,7 +100,8 @@ public class BillingService {
     public List<InvoiceResponse> forBooking(UUID bookingId) {
         Payment payment = payment(bookingId);
         return invoices.findByBooking_BookingIdOrderByIssuedAtAsc(bookingId).stream()
-                .map(i -> InvoiceMapper.toResponse(i, true, payment, cashTotals(payment))).toList();
+                .map(i -> InvoiceMapper.toResponse(i, true, payment, cashTotals(payment), paymentMethods(payment)))
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -108,7 +111,7 @@ public class BillingService {
             throw ApiException.forbidden();
         }
         Payment payment = payment(inv.getBooking().getBookingId());
-        return InvoiceMapper.toResponse(inv, true, payment, cashTotals(payment));
+        return InvoiceMapper.toResponse(inv, true, payment, cashTotals(payment), paymentMethods(payment));
     }
 
     @Transactional(readOnly = true)
@@ -116,7 +119,7 @@ public class BillingService {
         return invoices.findTop300ByOrderByIssuedAtDesc().stream()
                 .map(i -> {
                     Payment payment = payment(i.getBooking().getBookingId());
-                    return InvoiceMapper.toResponse(i, false, payment, cashTotals(payment));
+                    return InvoiceMapper.toResponse(i, false, payment, cashTotals(payment), paymentMethods(payment));
                 }).toList();
     }
 
@@ -141,6 +144,16 @@ public class BillingService {
             }
         }
         return new CashTotals(received, refunded);
+    }
+
+    /** Every way money was received for the booking, in order (PaymentMapper.receivedMethods); empty with no payment. */
+    @Transactional(readOnly = true)
+    public List<PaymentMethod> paymentMethods(Payment payment) {
+        if (payment == null) {
+            return List.of();
+        }
+        return PaymentMapper.receivedMethods(payment,
+                transactions.findByPayment_PaymentIdOrderByCreatedAtAsc(payment.getPaymentId()));
     }
 
     private Payment payment(UUID bookingId) {

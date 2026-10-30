@@ -2,6 +2,7 @@ package com.scooterrentalkandy.spring.controllers;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -28,6 +29,7 @@ import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.NotificationRepository;
+import com.scooterrentalkandy.spring.repository.PaymentReceiptRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
@@ -38,23 +40,28 @@ import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
 import com.scooterrentalkandy.spring.support.TestNics;
 import com.scooterrentalkandy.spring.support.TestPaymentGateway;
 import jakarta.persistence.EntityManager;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.request.AbstractMockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Cash at the rental counter (BE-044), with a card provider configured (the test gateway) to show cash never
- * reaches it. The customer chooses cash; only an admin records cash as received or handed back. The default scooter
- * (LKR 2,500 a day, 250 an hour) takes LKR 250 at booking; a rental 73.5 hours in bills 3 days + 2 hours = 8,000.
- * The final cash balance is the adjusted final total (after any approved RESOLVED repair reimbursement) less the
- * cash received.
+ * Cash at the rental counter (BE-044), with a card provider configured (the test gateway) to show cash never reaches
+ * it. Cash is not a checkout option: the customer pays the initial charge online (here by QR payment or bank
+ * transfer, approved by an admin), and only an admin records cash, when the customer hands over the final balance at
+ * the counter. The default scooter (LKR 2,500 a day, 250 an hour) takes LKR 250 at booking; a rental 73.5 hours in
+ * bills 3 days + 2 hours = 8,000. The final balance is the adjusted final total (after any approved RESOLVED repair
+ * reimbursement) less what was received. Bookings paid in cash before cash left the checkout are still settled and
+ * refunded at the counter.
  */
 @AutoConfigureMockMvc
 @Transactional
@@ -79,6 +86,9 @@ class CashPaymentTests extends PostgresIntegrationTest {
     private PaymentTransactionRepository transactions;
 
     @Autowired
+    private PaymentReceiptRepository receipts;
+
+    @Autowired
     private NotificationRepository notifications;
 
     @Autowired
@@ -97,11 +107,20 @@ class CashPaymentTests extends PostgresIntegrationTest {
     private User admin;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         gateway.reset();
         customer = saveUser(Role.USER);
         admin = saveUser(Role.ADMIN);
+        mvc.perform(as(admin, multipart("/api/admin/payment-settings/qr-image")
+                .file(new MockMultipartFile("image", "qr.png", "image/png", RepairPhotoTests.PNG))))
+                .andExpect(status().isOk());
+        mvc.perform(json(as(admin, put("/api/admin/payment-settings")), """
+                {"qrEnabled": true, "qrDisplayName": "Scooter Rent Kandy", "bankEnabled": true,
+                 "bankName": "Bank of Ceylon", "bankAccountHolder": "Scooter Rent Kandy", "bankAccountNumber": "0001234567",
+                 "bankBranch": "Kandy"}""")).andExpect(status().isOk());
     }
+
+    // ---------------------------------------------------------------- fixtures
 
     private static String unique() {
         return UUID.randomUUID().toString().replace("-", "").substring(0, 10);
@@ -120,7 +139,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
         return users.saveAndFlush(u);
     }
 
-    private MockHttpServletRequestBuilder as(User user, MockHttpServletRequestBuilder request) {
+    private <B extends AbstractMockHttpServletRequestBuilder<B>> B as(User user, B request) {
         return request.header(HttpHeaders.AUTHORIZATION, "Bearer " + jwt.issue(user));
     }
 
@@ -160,28 +179,83 @@ class CashPaymentTests extends PostgresIntegrationTest {
         return signedBooking(saveScooter("2500.00", "250.00"));
     }
 
-    private ResultActions chooseCash(UUID bookingId) throws Exception {
-        return mvc.perform(as(customer, post("/api/bookings/" + bookingId + "/cash")));
-    }
-
     private ResultActions confirm(User who, UUID bookingId, String step, String value) throws Exception {
         return mvc.perform(json(as(who, post("/api/admin/bookings/" + bookingId + "/cash/" + step)), amount(value)));
     }
 
-    /** Cash chosen and the initial LKR 250 recorded by the admin; the rental started {@code hoursAgo} hours ago. */
-    private UUID cashRentalUnderWay(Scooter s, String initial, long minutesAgo) throws Exception {
+    private ResultActions submit(UUID bookingId, String method) throws Exception {
+        var request = multipart("/api/bookings/" + bookingId + "/receipts")
+                .file(new MockMultipartFile("receipt", "receipt.png", "image/png", RepairPhotoTests.PNG))
+                .param("reference", "TXN-" + unique());
+        if (method != null) {
+            request.param("method", method);
+        }
+        return mvc.perform(as(customer, request));
+    }
+
+    private ResultActions approve(UUID bookingId, String value) throws Exception {
+        em.flush();
+        UUID receiptId = receipts.findPendingByBookingId(bookingId).orElseThrow().getPaymentReceiptId();
+        return mvc.perform(json(as(admin, post("/api/admin/payment-receipts/" + receiptId + "/approve")),
+                amount(value)));
+    }
+
+    /** The initial charge paid by {@code method} and approved by the admin, without starting the rental clock. */
+    private UUID paidOnline(Scooter s, PaymentMethod method, String initial) throws Exception {
         UUID id = signedBooking(s);
-        chooseCash(id).andExpect(status().isOk());
-        confirm(admin, id, "initial", initial).andExpect(status().isOk());
-        Booking b = bookings.findById(id).orElseThrow();
-        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
-        bookings.saveAndFlush(b);
+        mvc.perform(json(as(customer, post("/api/bookings/" + id + "/transfer")), "{\"method\": \"" + method + "\"}"))
+                .andExpect(status().isOk());
+        submit(id, null).andExpect(status().isOk());
+        approve(id, initial).andExpect(status().isOk());
         return id;
     }
 
-    /** 73.5 hours in: 3 days + 2 extra hours = LKR 8,000 subtotal, LKR 250 cash received. */
-    private UUID cashRentalOf8000() throws Exception {
-        return cashRentalUnderWay(saveScooter("2500.00", "250.00"), "250", 73 * 60 + 30);
+    /** As {@link #paidOnline}; the rental started {@code minutesAgo} minutes ago. */
+    private UUID rentalUnderWay(Scooter s, PaymentMethod method, String initial, long minutesAgo) throws Exception {
+        UUID id = paidOnline(s, method, initial);
+        startedMinutesAgo(id, minutesAgo);
+        return id;
+    }
+
+    /** 73.5 hours in: 3 days + 2 extra hours = LKR 8,000 subtotal, LKR 250 received by {@code method}. */
+    private UUID rentalOf8000(PaymentMethod method) throws Exception {
+        return rentalUnderWay(saveScooter("2500.00", "250.00"), method, "250", 73 * 60 + 30);
+    }
+
+    private void startedMinutesAgo(UUID id, long minutesAgo) {
+        Booking b = bookings.findById(id).orElseThrow();
+        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
+        bookings.saveAndFlush(b);
+    }
+
+    /**
+     * A booking paid in cash at the counter before cash left the checkout: its payment is CASH, recorded by an admin,
+     * and the rental is under way. Written directly, since no endpoint creates such a payment any more.
+     */
+    private UUID earlierCashRental(Scooter s, String initial, long minutesAgo) throws Exception {
+        UUID id = signedBooking(s);
+        Booking b = bookings.findById(id).orElseThrow();
+        Payment p = new Payment();
+        p.setBooking(b);
+        p.setMethod(PaymentMethod.CASH);
+        p.setAmount(new BigDecimal(initial));
+        p.setStatus(PaymentStatus.SUCCESS);
+        p.setPaidAt(LocalDateTime.now().minusDays(1));
+        payments.save(p);
+        PaymentTransaction t = new PaymentTransaction();
+        t.setPayment(p);
+        t.setKind(PaymentTransaction.Kind.INITIAL);
+        t.setMethod(PaymentMethod.CASH);
+        t.setAmount(new BigDecimal(initial));
+        t.setStatus(PaymentTransaction.Status.SUCCESS);
+        t.setRecordedBy(admin);
+        t.setCreatedAt(LocalDateTime.now().minusDays(1));
+        transactions.save(t);
+        b.setStatus(BookingStatus.ACTIVE);
+        b.getScooter().setStatus(ScooterStatus.RENTED);
+        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
+        bookings.saveAndFlush(b);
+        return id;
     }
 
     private String report(UUID bookingId, boolean selfArranged, String claimed) throws Exception {
@@ -199,8 +273,14 @@ class CashPaymentTests extends PostgresIntegrationTest {
                 .andExpect(status().isOk());
     }
 
-    private ResultActions end(UUID bookingId) throws Exception {
-        return mvc.perform(as(customer, put("/api/bookings/" + bookingId + "/complete")));
+    private ResultActions end(User who, UUID bookingId) throws Exception {
+        return mvc.perform(as(who, put("/api/bookings/" + bookingId + "/complete")));
+    }
+
+    private Booking booking(UUID bookingId) {
+        em.flush();
+        em.clear();
+        return bookings.findById(bookingId).orElseThrow();
     }
 
     private Payment payment(UUID bookingId) {
@@ -233,405 +313,333 @@ class CashPaymentTests extends PostgresIntegrationTest {
         assertThat(gateway.cancelled()).isEmpty();
     }
 
-    // ---------------------------------------------------------------- choosing cash
+    // ---------------------------------------------------------------- cash is not a checkout option
 
     @Test
-    void choosingCashLeavesTheBookingAwaitingPaymentAndRecordsNothingAsPaid() throws Exception {
+    void theCustomerCannotChooseOrRecordCashAtCheckout() throws Exception {
         UUID id = signedBooking();
 
-        chooseCash(id).andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("PENDING"))
-                .andExpect(jsonPath("$.stage").value("AWAITING_PAYMENT"))
-                .andExpect(jsonPath("$.payment.method").value("CASH"))
-                .andExpect(jsonPath("$.payment.status").value("PENDING"))
-                .andExpect(jsonPath("$.payment.amount").value(250.00))
-                .andExpect(jsonPath("$.payment.paidAt").doesNotExist());
+        // Neither the earlier "pay cash at the counter" choice nor an admin "initial cash" step exists any more.
+        mvc.perform(as(customer, post("/api/bookings/" + id + "/cash"))).andExpect(status().is4xxClientError());
+        mvc.perform(post("/api/bookings/" + id + "/cash")).andExpect(status().isUnauthorized());
+        confirm(admin, id, "initial", "250").andExpect(status().is4xxClientError());
+        // Cash is not a transfer method either.
+        mvc.perform(json(as(customer, post("/api/bookings/" + id + "/transfer")), "{\"method\": \"CASH\"}"))
+                .andExpect(status().is4xxClientError());
+        submit(id, "CASH").andExpect(status().is4xxClientError());
 
-        Payment p = payment(id);
-        assertThat(p.getMethod()).isEqualTo(PaymentMethod.CASH);
-        assertThat(p.getStatus()).isEqualTo(PaymentStatus.PENDING);
-        assertThat(p.getProvider()).isNull();
-        assertThat(recorded(id)).isEmpty();
-        assertThat(subjects(admin)).anyMatch(s -> s.startsWith("Cash payment pending"));
+        assertThat(payments.findByBooking_BookingId(id)).isEmpty();
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
         assertNoProviderCalls();
     }
 
     @Test
-    void cashNeedsTheSignedAgreementAndTheOwnBooking() throws Exception {
-        Scooter s = saveScooter("2500.00", "250.00");
-        String created = mvc.perform(json(as(customer, post("/api/bookings")), """
-                        {"scooterId": "%s", "startTime": "%s", "pickupLocation": "Kandy"}"""
-                        .formatted(s.getScooterId(), LocalDateTime.now().plusDays(2).truncatedTo(ChronoUnit.MINUTES))))
-                .andReturn().getResponse().getContentAsString();
-        UUID unsigned = UUID.fromString(JsonPath.read(created, "$.id"));
-        chooseCash(unsigned).andExpect(status().isBadRequest());
+    void onlyAnAdminRecordsCash() throws Exception {
+        UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
+        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
 
-        UUID id = signedBooking();
-        mvc.perform(as(saveUser(Role.USER), post("/api/bookings/" + id + "/cash"))).andExpect(status().isNotFound());
-        mvc.perform(post("/api/bookings/" + id + "/cash")).andExpect(status().isUnauthorized());
-        assertThat(payments.findByBooking_BookingId(id)).isEmpty();
-    }
-
-    @Test
-    void choosingCashClosesAnOpenCardAttemptAndCardCanStillBeChosenAfterCash() throws Exception {
-        UUID id = signedBooking();
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/payment-intent"))).andExpect(status().isOk());
-        String intent = gateway.intents().getLast().id();
-
-        chooseCash(id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.method").value("CASH"));
-        assertThat(gateway.cancelled()).containsExactly(intent);
-        Payment p = payment(id);
-        assertThat(p.getStripePaymentId()).isNull();
-        assertThat(p.getProvider()).isNull();
-
-        // Back to card: the normal provider flow, unchanged.
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/payment-intent"))).andExpect(status().isOk());
-        Payment card = payment(id);
-        assertThat(card.getMethod()).isEqualTo(PaymentMethod.CARD);
-        assertThat(card.getProvider()).isEqualTo(gateway.name());
-        assertThat(card.getStripePaymentId()).isEqualTo(gateway.intents().getLast().id());
-    }
-
-    // ---------------------------------------------------------------- confirming the initial cash
-
-    @Test
-    void anAdminConfirmsTheInitialCashAndTheBookingBecomesActive() throws Exception {
-        UUID id = signedBooking();
-        chooseCash(id).andExpect(status().isOk());
-
-        confirm(admin, id, "initial", "250.00").andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ACTIVE"))
-                .andExpect(jsonPath("$.stage").value("UPCOMING"))
-                .andExpect(jsonPath("$.payment.method").value("CASH"))
-                .andExpect(jsonPath("$.payment.status").value("SUCCESS"))
-                .andExpect(jsonPath("$.payment.cardLast4").doesNotExist());
-
-        Booking b = bookings.findById(id).orElseThrow();
-        assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.RENTED);
-        Payment p = payment(id);
-        assertThat(p.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
-        assertThat(p.getPaidAt()).isNotNull();
-        assertThat(recorded(id)).singleElement().satisfies(t -> {
-            assertThat(t.getKind()).isEqualTo(PaymentTransaction.Kind.INITIAL);
-            assertThat(t.getStatus()).isEqualTo(PaymentTransaction.Status.SUCCESS);
-            assertThat(t.getAmount()).isEqualByComparingTo("250.00");
-            assertThat(t.getRecordedBy().getUserId()).isEqualTo(admin.getUserId());
-            assertThat(t.getProviderRef()).isNull();
-        });
-        assertThat(messages(customer)).anyMatch(m -> m.startsWith("Your cash payment of LKR 250.00 was confirmed."));
-    }
-
-    @Test
-    void aSuperAdminCanConfirmCash() throws Exception {
-        UUID id = signedBooking();
-        chooseCash(id).andExpect(status().isOk());
-
-        confirm(saveUser(Role.SUPER_ADMIN), id, "initial", "250").andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ACTIVE"));
-    }
-
-    @Test
-    void aCustomerCannotConfirmCashNotEvenTheirOwn() throws Exception {
-        UUID id = signedBooking();
-        chooseCash(id).andExpect(status().isOk());
-
-        confirm(customer, id, "initial", "250").andExpect(status().isForbidden());
-        confirm(customer, id, "balance", "250").andExpect(status().isForbidden());
-        confirm(customer, id, "refund", "250").andExpect(status().isForbidden());
-        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.PENDING);
-        assertThat(bookings.findById(id).orElseThrow().getStatus()).isEqualTo(BookingStatus.PENDING);
-    }
-
-    @Test
-    void confirmingCashNeedsAuthentication() throws Exception {
-        UUID id = signedBooking();
-        chooseCash(id).andExpect(status().isOk());
-
-        for (String step : List.of("initial", "balance", "refund")) {
-            mvc.perform(json(post("/api/admin/bookings/" + id + "/cash/" + step), amount("250")))
+        confirm(customer, id, "balance", "7750").andExpect(status().isForbidden());
+        confirm(customer, id, "refund", "7750").andExpect(status().isForbidden());
+        for (String step : List.of("balance", "refund")) {
+            mvc.perform(json(post("/api/admin/bookings/" + id + "/cash/" + step), amount("7750")))
                     .andExpect(status().isUnauthorized());
         }
-        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.PENDING);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(payment(id).getBalanceDue()).isEqualByComparingTo("7750.00");
+
+        confirm(saveUser(Role.SUPER_ADMIN), id, "balance", "7750").andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"));
     }
 
+    // ---------------------------------------------------------------- initial online payment
+
     @Test
-    void aRepeatedConfirmationRecordsTheCashOnceAndActivatesOnce() throws Exception {
-        UUID id = signedBooking();
-        chooseCash(id).andExpect(status().isOk());
+    void approvingTheInitialQrOrBankPaymentStartsTheRentalAndNeverCompletesIt() throws Exception {
+        for (PaymentMethod method : List.of(PaymentMethod.QR_TRANSFER, PaymentMethod.BANK_TRANSFER)) {
+            UUID id = signedBooking();
+            mvc.perform(json(as(customer, post("/api/bookings/" + id + "/transfer")),
+                    "{\"method\": \"" + method + "\"}")).andExpect(status().isOk());
+            submit(id, null).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING"));
+            assertThat(booking(id).getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
 
-        confirm(admin, id, "initial", "250").andExpect(status().isOk());
-        confirm(admin, id, "initial", "250").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACTIVE"));
+            approve(id, "250").andExpect(status().isOk());
 
-        assertThat(recorded(id)).hasSize(1);
-        assertThat(subjects(customer).stream().filter(s -> s.startsWith("Booking confirmed"))).hasSize(1);
+            Booking b = booking(id);
+            assertThat(b.getStatus()).isEqualTo(BookingStatus.ACTIVE);
+            assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.RENTED);
+            assertThat(b.getEndedAt()).isNull();
+            assertThat(b.getEndTime()).isNull();
+            assertThat(b.getTotalCost()).isNull();
+            assertThat(payment(id).getBalanceDue()).isNull();
+            // Nothing is due at the counter while the rental runs.
+            confirm(admin, id, "balance", "250").andExpect(status().isConflict());
+        }
     }
 
-    @Test
-    void anAmountOtherThanTheAmountDueIsRefused() throws Exception {
-        UUID id = signedBooking();
-        chooseCash(id).andExpect(status().isOk());
-
-        confirm(admin, id, "initial", "200").andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.startsWith("The amount due is LKR 250.00")));
-        confirm(admin, id, "initial", "0").andExpect(status().isBadRequest());
-        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.PENDING);
-    }
+    // ---------------------------------------------------------------- final cash at the counter
 
     @Test
-    void cashCannotBeConfirmedUnlessTheCustomerChoseCash() throws Exception {
-        UUID id = signedBooking();
-
-        confirm(admin, id, "initial", "250").andExpect(status().isConflict());
-        assertThat(payments.findByBooking_BookingId(id)).isEmpty();
-    }
-
-    @Test
-    void cashIsNeverAProviderPayment() throws Exception {
-        UUID id = cashRentalOf8000();
-        end(id).andExpect(status().isOk());
-        confirm(admin, id, "balance", "7750").andExpect(status().isOk());
-
-        Payment p = payment(id);
-        assertThat(p.getProvider()).isNull();
-        assertThat(p.getStripePaymentId()).isNull();
-        assertThat(p.getPaymentMethodRef()).isNull();
-        assertThat(p.getBalanceIntentId()).isNull();
-        assertThat(p.getCardLast4()).isNull();
-        assertThat(recorded(id)).allSatisfy(t -> {
-            assertThat(t.getProviderRef()).isNull();
-            assertThat(t.getIntentRef()).isNull();
-        });
-        assertNoProviderCalls();
-        mvc.perform(as(admin, get("/api/bookings/" + id + "/payment")))
-                .andExpect(jsonPath("$.method").value("CASH"))
-                .andExpect(jsonPath("$.provider").doesNotExist())
-                .andExpect(jsonPath("$.stripePaymentId").doesNotExist())
-                .andExpect(jsonPath("$.transactions[0].recordedBy").value(admin.getFullName()));
-    }
-
-    @Test
-    void aCancelledCashBookingCannotTakeCashAndItsExpiryNeedsNoProvider() throws Exception {
-        UUID id = signedBooking();
-        chooseCash(id).andExpect(status().isOk());
-
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isOk());
-        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.FAILED);
-        confirm(admin, id, "initial", "250").andExpect(status().isConflict());
-        assertNoProviderCalls();
-    }
-
-    // ---------------------------------------------------------------- final cash settlement
-
-    @Test
-    void theFinalCashBalanceIsTheAdjustedTotalLessTheCashReceived() throws Exception {
-        UUID id = cashRentalOf8000();
+    void anInitialQrPaymentAndTheFinalBalanceInCashSettleTheRental() throws Exception {
+        UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
         review(report(id, true, "2000"), "RESOLVED", "1500");
 
-        // Ending does not complete the rental: LKR 6,500 final total, 250 received, 6,250 due at the counter.
-        end(id).andExpect(status().isOk())
+        // Ending does not complete the rental: LKR 6,500 final total, 250 received, 6,250 due.
+        end(admin, id).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.stage").value("BALANCE_DUE"))
                 .andExpect(jsonPath("$.pendingTotalCost").value(6500.00))
                 .andExpect(jsonPath("$.payment.balanceDue").value(6250.00))
                 .andExpect(jsonPath("$.payment.refundDue").doesNotExist());
-        assertThat(subjects(customer)).anyMatch(s -> s.startsWith("Cash balance due"));
+        assertThat(messages(customer)).anyMatch(m -> m.contains("or pay it in cash at the rental counter"));
 
-        String invoices = mvc.perform(as(customer, get("/api/bookings/" + id + "/invoices")))
-                .andExpect(jsonPath("$[0].subtotal").value(8000.00))
-                .andExpect(jsonPath("$[0].total").value(6500.00))
-                .andExpect(jsonPath("$[0].paymentMethod").value("CASH"))
-                .andExpect(jsonPath("$[0].cashReceived").value(250.00))
-                .andExpect(jsonPath("$[0].balanceDue").value(6250.00))
-                .andReturn().getResponse().getContentAsString();
-        assertThat(lastLineAmount(invoices)).isEqualByComparingTo("-1500.00");
+        // The amount recorded is the server's balance: a different amount (a stale screen) is refused.
+        confirm(admin, id, "balance", "6500").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(Matchers.startsWith("The amount due is LKR 6250.00")));
+        confirm(admin, id, "balance", "0").andExpect(status().isBadRequest());
+        assertThat(recorded(id)).hasSize(1);
 
         confirm(admin, id, "balance", "6250").andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.stage").value("COMPLETED"))
                 .andExpect(jsonPath("$.totalCost").value(6500.00))
+                .andExpect(jsonPath("$.payment.method").value("QR_TRANSFER"))
+                .andExpect(jsonPath("$.payment.status").value("SUCCESS"))
                 .andExpect(jsonPath("$.payment.balanceDue").doesNotExist());
+
+        // The QR payment keeps its method; the cash is its own transaction.
+        List<PaymentTransaction> recorded = recorded(id);
+        assertThat(recorded).extracting(PaymentTransaction::getKind)
+                .containsExactly(PaymentTransaction.Kind.INITIAL, PaymentTransaction.Kind.BALANCE);
+        assertThat(recorded).extracting(PaymentTransaction::getMethod)
+                .containsExactly(PaymentMethod.QR_TRANSFER, PaymentMethod.CASH);
+        assertThat(recorded.get(1).getAmount()).isEqualByComparingTo("6250.00");
+        assertThat(recorded.get(1).getRecordedBy().getUserId()).isEqualTo(admin.getUserId());
+        assertThat(recorded.get(1).getProviderRef()).isNull();
         Payment p = payment(id);
         assertThat(p.getAmount()).isEqualByComparingTo("6500.00");
-        assertThat(p.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
-        assertThat(recorded(id)).extracting(PaymentTransaction::getKind)
-                .containsExactly(PaymentTransaction.Kind.INITIAL, PaymentTransaction.Kind.BALANCE);
-        assertThat(subjects(customer)).anyMatch(s -> s.startsWith("Final cash payment received"));
-        assertThat(subjects(admin)).anyMatch(s -> s.startsWith("Final cash payment received"));
-        mvc.perform(as(customer, get("/api/bookings/" + id + "/invoices")))
-                .andExpect(jsonPath("$[0].cashReceived").value(6500.00))
-                .andExpect(jsonPath("$[0].balanceDue").doesNotExist());
+        assertThat(p.getMethod()).isEqualTo(PaymentMethod.QR_TRANSFER);
+        Booking b = booking(id);
+        assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
 
-        // Repeating the confirmation changes nothing.
-        confirm(admin, id, "balance", "6250").andExpect(status().isOk());
-        assertThat(recorded(id)).hasSize(2);
+        // Both sides see it completed, with the whole payment history.
+        for (User who : List.of(customer, admin)) {
+            mvc.perform(as(who, get("/api/bookings/" + id))).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("COMPLETED"))
+                    .andExpect(jsonPath("$.payment.status").value("SUCCESS"));
+            mvc.perform(as(who, get("/api/bookings/" + id + "/invoices"))).andExpect(status().isOk())
+                    .andExpect(jsonPath("$[0].subtotal").value(8000.00))
+                    .andExpect(jsonPath("$[0].total").value(6500.00))
+                    .andExpect(jsonPath("$[0].paymentMethod").value("QR_TRANSFER"))
+                    .andExpect(jsonPath("$[0].paymentMethods[0]").value("QR_TRANSFER"))
+                    .andExpect(jsonPath("$[0].paymentMethods[1]").value("CASH"))
+                    .andExpect(jsonPath("$[0].amountReceived").value(6500.00))
+                    .andExpect(jsonPath("$[0].balanceDue").doesNotExist());
+        }
+        mvc.perform(as(admin, get("/api/bookings/" + id + "/payment")))
+                .andExpect(jsonPath("$.transactions[0].method").value("QR_TRANSFER"))
+                .andExpect(jsonPath("$.transactions[0].amount").value(250.00))
+                .andExpect(jsonPath("$.transactions[1].method").value("CASH"))
+                .andExpect(jsonPath("$.transactions[1].amount").value(6250.00));
+        assertThat(subjects(customer)).anyMatch(s -> s.startsWith("Final cash payment received"));
+        assertThat(subjects(customer)).anyMatch(s -> s.startsWith("Rental completed"));
+        assertThat(subjects(admin)).anyMatch(s -> s.startsWith("Final cash payment received"));
         assertNoProviderCalls();
     }
 
     @Test
-    void theClaimedAmountAloneDoesNotReduceTheCashBalance() throws Exception {
-        UUID id = cashRentalOf8000();
+    void anInitialBankTransferAndTheFinalBalanceInCashSettleTheRental() throws Exception {
+        UUID id = rentalOf8000(PaymentMethod.BANK_TRANSFER);
+        review(report(id, true, "2000"), "RESOLVED", "1500");
+        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(6250.00));
+
+        confirm(admin, id, "balance", "6250").andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.totalCost").value(6500.00));
+
+        assertThat(recorded(id)).extracting(PaymentTransaction::getMethod)
+                .containsExactly(PaymentMethod.BANK_TRANSFER, PaymentMethod.CASH);
+        assertThat(payment(id).getAmount()).isEqualByComparingTo("6500.00");
+        assertThat(booking(id).getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
+    }
+
+    @Test
+    void aRepeatedCashConfirmationRecordsTheCashOnceAndCompletesOnce() throws Exception {
+        UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
+        end(customer, id).andExpect(status().isOk());
+
+        confirm(admin, id, "balance", "7750").andExpect(status().isOk());
+        confirm(admin, id, "balance", "7750").andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"));
+
+        assertThat(recorded(id)).hasSize(2);
+        assertThat(payment(id).getAmount()).isEqualByComparingTo("8000.00");
+        assertThat(subjects(customer).stream().filter(s -> s.startsWith("Final cash payment received"))).hasSize(1);
+        assertThat(subjects(customer).stream().filter(s -> s.startsWith("Rental completed"))).hasSize(1);
+    }
+
+    @Test
+    void cashCannotBeRecordedBeforeTheFinalBillOrWhileARepairIsUnresolved() throws Exception {
+        UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
+        confirm(admin, id, "balance", "7750").andExpect(status().isConflict()); // no final bill yet
+
         String repair = report(id, true, "2000");
-        end(id).andExpect(status().isConflict()); // the report must be resolved first
+        review(repair, "UNDER_REVIEW", "1500");
+        end(admin, id).andExpect(status().isConflict()).andExpect(jsonPath("$.message")
+                .value("This rental has unresolved repair reports. Resolve them before calculating the final bill."));
+        confirm(admin, id, "balance", "7750").andExpect(status().isConflict());
+        assertThat(booking(id).getEndedAt()).isNull();
 
-        // Resolved with no approved amount: the claim alone takes nothing off.
-        review(repair, "RESOLVED", "null");
-        end(id).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
+        // Resolved and saved, the approved amount reduces the final bill; only then is cash due.
+        review(repair, "RESOLVED", "1500");
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(6250.00));
+        confirm(admin, id, "balance", "6250").andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"));
     }
 
     @Test
-    void anApprovalStillUnderReviewBlocksTheFinalBill() throws Exception {
-        UUID id = cashRentalOf8000();
-        review(report(id, true, "2000"), "UNDER_REVIEW", "1500");
+    void cashIsNotDueWhenARefundIsDue() throws Exception {
+        // One hour in: 250 billed, less an approved reimbursement of 100 = 150 against 250 received.
+        UUID id = rentalUnderWay(saveScooter("2500.00", "250.00"), PaymentMethod.QR_TRANSFER, "250", 30);
+        review(report(id, true, "100"), "RESOLVED", "100");
+        end(admin, id).andExpect(status().isOk())
+                .andExpect(jsonPath("$.payment.refundDue").value(100.00))
+                .andExpect(jsonPath("$.payment.balanceDue").doesNotExist());
 
-        end(id).andExpect(status().isConflict()).andExpect(jsonPath("$.message").value("This rental has unresolved repair reports. Resolve them before calculating the final bill."));
-        Booking b = bookings.findById(id).orElseThrow();
-        assertThat(b.getStatus()).isEqualTo(BookingStatus.ACTIVE);
-        assertThat(b.getEndedAt()).isNull();
-        assertThat(payment(id).getBalanceDue()).isNull();
+        confirm(admin, id, "balance", "100").andExpect(status().isConflict());
+        // A QR overpayment is refunded from the business account and recorded as a manual refund, not as cash.
+        confirm(admin, id, "refund", "100").andExpect(status().isConflict());
+        assertThat(recorded(id)).hasSize(1);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
     }
 
     @Test
-    void severalApprovedReimbursementsReduceTheCashBalanceTogether() throws Exception {
-        UUID id = cashRentalOf8000();
-        review(report(id, true, "1200"), "RESOLVED", "1000");
-        review(report(id, true, "700"), "RESOLVED", "500");
-        String declined = report(id, true, "900");
-        review(declined, "UNDER_REVIEW", "900");
-        end(id).andExpect(status().isConflict());
-        review(declined, "RESOLVED", "null"); // resolved without a reimbursement
+    void cashIsNotDueWhenTheReceivedAmountMatchesTheFinalTotal() throws Exception {
+        UUID id = rentalUnderWay(saveScooter("2500.00", "250.00"), PaymentMethod.BANK_TRANSFER, "250", 30);
 
-        // 8,000 - 1,500 = 6,500 total; 6,250 due after the 250 received.
-        end(id).andExpect(jsonPath("$.pendingTotalCost").value(6500.00))
-                .andExpect(jsonPath("$.payment.balanceDue").value(6250.00));
+        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.totalCost").value(250.00));
+        confirm(admin, id, "balance", "0.01").andExpect(status().isConflict());
+        assertThat(recorded(id)).hasSize(1);
     }
 
     @Test
-    void cashAboveTheAdjustedTotalLeavesARefundDueThatOnlyAnAdminCanConfirm() throws Exception {
+    void cashIsNotRecordedAfterTheFinalTransferWasApproved() throws Exception {
+        UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
+        end(customer, id).andExpect(status().isOk());
+        submit(id, "QR_TRANSFER").andExpect(status().isOk());
+
+        // The customer may already have transferred the money: no cash while the receipt waits.
+        confirm(admin, id, "balance", "7750").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(Matchers.containsString("waiting for verification")));
+        approve(id, "7750").andExpect(status().isOk());
+
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.COMPLETED);
+        // Completed by the QR payment: no cash is recorded on top of it.
+        confirm(admin, id, "balance", "7750").andExpect(status().isConflict());
+        assertThat(recorded(id)).extracting(PaymentTransaction::getMethod)
+                .containsExactly(PaymentMethod.QR_TRANSFER, PaymentMethod.QR_TRANSFER);
+    }
+
+    @Test
+    void cashCannotSettleACancelledBooking() throws Exception {
+        UUID id = signedBooking();
+        mvc.perform(as(customer, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isOk());
+
+        confirm(admin, id, "balance", "250").andExpect(status().isConflict());
+        confirm(admin, id, "refund", "250").andExpect(status().isConflict());
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.CANCELLED);
+    }
+
+    @Test
+    void theCsvListsEveryPaymentMethodUsed() throws Exception {
+        UUID mixed = rentalOf8000(PaymentMethod.QR_TRANSFER);
+        review(report(mixed, true, "2000"), "RESOLVED", "1500");
+        end(admin, mixed).andExpect(status().isOk());
+        confirm(admin, mixed, "balance", "6250").andExpect(status().isOk());
+        UUID open = rentalOf8000(PaymentMethod.BANK_TRANSFER);
+        end(admin, open).andExpect(status().isOk());
+        em.flush();
+
+        String csv = reports.bookingsCsv(LocalDate.now(), LocalDate.now());
+        List<String> header = cells(csv.lines().findFirst().orElseThrow());
+        assertThat(header).contains("Payment Methods").doesNotContain("Payment Method");
+        List<String> row = row(csv, mixed);
+        assertThat(row.get(header.indexOf("Payment Methods"))).isEqualTo("QR_TRANSFER + CASH");
+        assertThat(row.get(header.indexOf("Total Amount (LKR)"))).isEqualTo("6500.00");
+        assertThat(row.get(header.indexOf("Amount Paid (LKR)"))).isEqualTo("6500.00");
+        assertThat(row.get(header.indexOf("Balance Due (LKR)"))).isEmpty();
+        assertThat(row.get(header.indexOf("Status"))).isEqualTo("COMPLETED");
+        List<String> unpaid = row(csv, open);
+        assertThat(unpaid.get(header.indexOf("Payment Methods"))).isEqualTo("BANK_TRANSFER");
+        assertThat(unpaid.get(header.indexOf("Balance Due (LKR)"))).isEqualTo("7750.00");
+        assertThat(csv).doesNotContainIgnoringCase("stripe");
+    }
+
+    // ---------------------------------------------------------------- bookings paid in cash earlier
+
+    @Test
+    void anEarlierCashBookingStillSettlesItsBalanceAtTheCounter() throws Exception {
+        UUID id = earlierCashRental(saveScooter("2500.00", "250.00"), "250", 73 * 60 + 30);
+
+        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
+        assertThat(subjects(customer)).anyMatch(s -> s.startsWith("Cash balance due"));
+        confirm(admin, id, "balance", "7750").andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"));
+        assertThat(recorded(id)).extracting(PaymentTransaction::getMethod)
+                .containsExactly(PaymentMethod.CASH, PaymentMethod.CASH);
+        assertNoProviderCalls();
+    }
+
+    @Test
+    void anEarlierCashOverpaymentIsHandedBackOnlyByAnAdmin() throws Exception {
         // LKR 2,500 an hour: 2,500 cash at booking. 90 minutes = 2 hours = 5,000, less 3,000 approved = 2,000.
-        UUID id = cashRentalUnderWay(saveScooter("20000.00", "2500.00"), "2500", 90);
+        UUID id = earlierCashRental(saveScooter("20000.00", "2500.00"), "2500", 90);
         review(report(id, true, "3000"), "RESOLVED", "3000");
 
-        end(id).andExpect(status().isOk())
+        end(customer, id).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
-                .andExpect(jsonPath("$.stage").value("BALANCE_DUE"))
                 .andExpect(jsonPath("$.pendingTotalCost").value(2000.00))
                 .andExpect(jsonPath("$.payment.balanceDue").doesNotExist())
                 .andExpect(jsonPath("$.payment.refundDue").value(500.00));
-        // Not handed back yet: nothing is recorded as refunded, and no provider is asked to refund.
-        assertThat(recorded(id)).extracting(PaymentTransaction::getKind).containsExactly(PaymentTransaction.Kind.INITIAL);
-        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
-        assertThat(subjects(customer)).anyMatch(s -> s.startsWith("Cash refund due"));
+        confirm(admin, id, "balance", "500").andExpect(status().isConflict()); // a refund is due, not a balance
         mvc.perform(as(customer, get("/api/bookings/" + id + "/invoices")))
-                .andExpect(jsonPath("$[0].total").value(2000.00))
                 .andExpect(jsonPath("$[0].cashReceived").value(2500.00))
                 .andExpect(jsonPath("$[0].refundDue").value(500.00))
                 .andExpect(jsonPath("$[0].cashRefunded").value(0.00));
 
         confirm(customer, id, "refund", "500").andExpect(status().isForbidden());
         confirm(admin, id, "refund", "400").andExpect(status().isConflict());
-
         confirm(admin, id, "refund", "500").andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.totalCost").value(2000.00))
                 .andExpect(jsonPath("$.payment.refundDue").doesNotExist());
-        Payment p = payment(id);
-        assertThat(p.getAmount()).isEqualByComparingTo("2000.00");
-        assertThat(p.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
-        assertThat(recorded(id).getLast()).satisfies(t -> {
-            assertThat(t.getKind()).isEqualTo(PaymentTransaction.Kind.REFUND);
-            assertThat(t.getAmount()).isEqualByComparingTo("500.00");
-            assertThat(t.getRecordedBy().getUserId()).isEqualTo(admin.getUserId());
-            assertThat(t.getProviderRef()).isNull();
-        });
-        assertThat(messages(customer)).anyMatch(m -> m.startsWith("A cash refund of LKR 500.00 was recorded"));
-        mvc.perform(as(customer, get("/api/bookings/" + id + "/invoices")))
-                .andExpect(jsonPath("$[0].cashReceived").value(2500.00))
-                .andExpect(jsonPath("$[0].cashRefunded").value(500.00))
-                .andExpect(jsonPath("$[0].refundDue").doesNotExist());
-
         confirm(admin, id, "refund", "500").andExpect(status().isOk());
-        assertThat(recorded(id)).hasSize(2);
+
+        assertThat(recorded(id)).extracting(PaymentTransaction::getKind)
+                .containsExactly(PaymentTransaction.Kind.INITIAL, PaymentTransaction.Kind.REFUND);
+        assertThat(payment(id).getAmount()).isEqualByComparingTo("2000.00");
+        assertThat(messages(customer)).anyMatch(m -> m.startsWith("A cash refund of LKR 500.00 was recorded"));
         assertNoProviderCalls();
     }
 
     @Test
-    void aZeroFinalTotalOwesBackAllTheCashAndNeverChargesANegativeAmount() throws Exception {
-        UUID id = cashRentalUnderWay(saveScooter("2500.00", "250.00"), "250", 30); // 1 hour: 250 subtotal
-        review(report(id, true, "2000"), "RESOLVED", "2000");
-
-        end(id).andExpect(jsonPath("$.pendingTotalCost").value(0.00))
-                .andExpect(jsonPath("$.payment.balanceDue").doesNotExist())
-                .andExpect(jsonPath("$.payment.refundDue").value(250.00));
-
-        confirm(admin, id, "refund", "250").andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.totalCost").value(0.00));
-        Payment p = payment(id);
-        assertThat(p.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
-        assertThat(p.getAmount()).isEqualByComparingTo("250.00");
-        assertNoProviderCalls();
-    }
-
-    @Test
-    void cashMatchingTheFinalTotalCompletesTheRentalAtOnce() throws Exception {
-        UUID id = cashRentalUnderWay(saveScooter("2500.00", "250.00"), "250", 30);
-
-        end(id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.totalCost").value(250.00));
-        assertNoProviderCalls();
-    }
-
-    @Test
-    void aCashBalanceCannotBePaidOnlineOrConfirmedBeforeTheRentalEnds() throws Exception {
-        UUID id = cashRentalOf8000();
-        confirm(admin, id, "balance", "7750").andExpect(status().isConflict());
-        confirm(admin, id, "refund", "250").andExpect(status().isConflict());
-
-        end(id).andExpect(status().isOk());
-        mvc.perform(as(customer, post("/api/bookings/" + id + "/balance-intent"))).andExpect(status().isConflict());
-        assertNoProviderCalls();
-    }
-
-    @Test
-    void aCancelledCashBookingOwesTheCashBackUntilAnAdminRecordsTheRefund() throws Exception {
-        UUID id = signedBooking();
-        chooseCash(id).andExpect(status().isOk());
-        confirm(admin, id, "initial", "250").andExpect(status().isOk());
+    void anEarlierCashBookingCancelledBeforeItStartedOwesTheCashBack() throws Exception {
+        UUID id = earlierCashRental(saveScooter("2500.00", "250.00"), "250", 0);
+        Booking b = bookings.findById(id).orElseThrow();
+        b.setStartTime(LocalDateTime.now().plusDays(2).truncatedTo(ChronoUnit.MINUTES));
+        bookings.saveAndFlush(b);
 
         mvc.perform(as(customer, post("/api/bookings/" + id + "/cancel"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CANCELLED"))
                 .andExpect(jsonPath("$.payment.refundDue").value(250.00));
-        assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
-        assertThat(messages(customer)).anyMatch(m -> m.contains("A cash refund of LKR 250.00 is due to you"));
-
         confirm(admin, id, "refund", "250").andExpect(status().isOk())
                 .andExpect(jsonPath("$.stage").value("REFUNDED"));
         assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.REFUNDED);
         assertNoProviderCalls();
     }
 
-    @Test
-    void theCsvReportsCashAsCash() throws Exception {
-        UUID id = cashRentalOf8000();
-        review(report(id, true, "2000"), "RESOLVED", "1500");
-        end(id).andExpect(status().isOk());
-        em.flush();
-
-        String csv = reports.bookingsCsv(LocalDate.now(), LocalDate.now());
-        List<String> header = cells(csv.lines().findFirst().orElseThrow());
-        List<String> row = cells(csv.lines()
-                .filter(l -> l.startsWith("\"" + bookings.findById(id).orElseThrow().getReference() + "\""))
-                .findFirst().orElseThrow());
-        assertThat(row.get(header.indexOf("Payment Method"))).isEqualTo("CASH");
-        assertThat(row.get(header.indexOf("Total Amount (LKR)"))).isEqualTo("6500.00");
-        assertThat(row.get(header.indexOf("Amount Paid (LKR)"))).isEqualTo("250.00");
-        assertThat(row.get(header.indexOf("Balance Due (LKR)"))).isEqualTo("6250.00");
-        assertThat(row.get(header.indexOf("Refund Due (LKR)"))).isEmpty();
-        assertThat(csv).doesNotContainIgnoringCase("stripe");
-    }
-
-    private static BigDecimal lastLineAmount(String invoicesJson) {
-        List<Object> lines = JsonPath.read(invoicesJson, "$[0].lines");
-        return new BigDecimal(String.valueOf(JsonPath.<Object>read(lines.getLast(), "$.amount")));
+    private static List<String> row(String csv, UUID bookingId) {
+        return cells(csv.lines().filter(l -> l.contains("\"" + bookingId + "\"")).findFirst().orElseThrow());
     }
 
     /** The cells of one CSV record (quoted cells may contain commas and doubled quotes). */

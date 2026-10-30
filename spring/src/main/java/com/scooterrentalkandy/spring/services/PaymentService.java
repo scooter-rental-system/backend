@@ -10,6 +10,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import com.scooterrentalkandy.spring.config.AppProperties;
 import com.scooterrentalkandy.spring.dto.PaymentDtos.PaymentConfigResponse;
 import com.scooterrentalkandy.spring.dto.PaymentDtos.PaymentIntentResponse;
@@ -209,16 +210,11 @@ public class PaymentService {
     }
 
     /**
-     * Before an unpaid booking switches to cash: closes its card payment intent, if it has one, so it can no longer
-     * be paid. Without a configured provider the intent cannot be paid either and is closed here only. If the
-     * provider can no longer cancel it, the customer may be paying right now: 409 and nothing changes.
+     * Before an unpaid booking switches to QR payment or bank transfer: closes its card payment intent, if it has
+     * one, so it can no longer be paid; {@code reason} says which method replaced it. Without a configured provider
+     * the intent cannot be paid either and is closed here only. If the provider can no longer cancel it, the customer
+     * may be paying right now: 409 and nothing changes.
      */
-    @Transactional(propagation = Propagation.MANDATORY)
-    public void closeCardAttempt(Payment p) {
-        closeCardAttempt(p, "Replaced by a cash payment");
-    }
-
-    /** As {@link #closeCardAttempt(Payment)}, before switching to another manual method; {@code reason} says which. */
     @Transactional(propagation = Propagation.MANDATORY)
     public void closeCardAttempt(Payment p, String reason) {
         if (p.getMethod().isManual() || p.getStripePaymentId() == null) {
@@ -598,14 +594,22 @@ public class PaymentService {
     /** The booking's payment with its full provider transaction history. */
     @Transactional(readOnly = true)
     public Optional<PaymentResponse> forBooking(UUID bookingId) {
-        return payments.findByBooking_BookingId(bookingId).map(p -> PaymentMapper.toResponse(p, false,
-                transactions.findByPayment_PaymentIdOrderByCreatedAtAsc(p.getPaymentId()).stream()
-                        .map(PaymentMapper::toResponse).toList()));
+        return payments.findByBooking_BookingId(bookingId).map(p -> {
+            List<PaymentTransaction> recorded = transactions.findByPayment_PaymentIdOrderByCreatedAtAsc(p.getPaymentId());
+            return PaymentMapper.toResponse(p, false, recorded.stream().map(PaymentMapper::toResponse).toList(),
+                    PaymentMapper.receivedMethods(p, recorded));
+        });
     }
 
     @Transactional(readOnly = true)
     public List<PaymentResponse> recent() {
-        return payments.findTop300ByOrderByCreatedAtDesc().stream().map(p -> PaymentMapper.toResponse(p, true)).toList();
+        List<Payment> recent = payments.findTop300ByOrderByCreatedAtDesc();
+        // One query for every listed payment's transactions, for the methods each was paid by.
+        Map<UUID, List<PaymentTransaction>> recorded = transactions
+                .findByPayment_PaymentIdInOrderByCreatedAtAsc(recent.stream().map(Payment::getPaymentId).toList())
+                .stream().collect(Collectors.groupingBy(t -> t.getPayment().getPaymentId()));
+        return recent.stream().map(p -> PaymentMapper.toResponse(p, true, null,
+                PaymentMapper.receivedMethods(p, recorded.getOrDefault(p.getPaymentId(), List.of())))).toList();
     }
 
     /** The intent or charge transaction recorded for {@code intentId} on this payment, if we created it. */

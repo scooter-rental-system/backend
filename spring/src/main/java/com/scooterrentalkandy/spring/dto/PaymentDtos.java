@@ -58,7 +58,12 @@ public final class PaymentDtos {
             /** Provider calls (or recorded cash) for this payment; included for a single booking, null in lists. */
             List<TransactionResponse> transactions,
             /** Cash, QR or bank transfer only: money still owed back to the customer; null when none. */
-            BigDecimal refundDue) {
+            BigDecimal refundDue,
+            /**
+             * Every way money was received, in order and once each, e.g. [QR_TRANSFER, CASH] when the final balance
+             * was paid in cash after a QR payment; {@code method} stays the first.
+             */
+            List<PaymentMethod> paymentMethods) {
     }
 
     /**

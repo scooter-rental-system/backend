@@ -828,7 +828,9 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$[0].lines[0].quantity").value(3))
                 .andExpect(jsonPath("$[0].lines[1].quantity").value(0.0))
                 .andExpect(jsonPath("$[0].lines[1].amount").value(0.0))
-                .andExpect(jsonPath("$[0].paymentStatus").value("SUCCESS"));
+                .andExpect(jsonPath("$[0].paymentStatus").value("SUCCESS"))
+                .andExpect(jsonPath("$[0].paymentMethods.length()").value(1))
+                .andExpect(jsonPath("$[0].paymentMethods[0]").value("CARD"));
     }
 
     @Test
@@ -855,6 +857,12 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
                 .containsExactly("booking-" + id + "-balance-charge-1", "booking-" + id + "-balance-charge-2");
         assertThat(gateway.charges()).allSatisfy(c -> assertThat(c.amount()).isEqualByComparingTo("500.00"));
         assertThat(booking(id).getEndedAt()).isEqualTo(endedAt);
+
+        // A card rental's balance stays with the provider: cash at the counter is not recorded against it.
+        mvc.perform(as(saveUser(Role.ADMIN), post("/api/admin/bookings/" + id + "/cash/balance"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"amount\": 500}"))
+                .andExpect(status().isConflict());
+        assertThat(payment(id).getBalanceDue()).isEqualByComparingTo("500.00");
 
         // The customer pays the balance online.
         mvc.perform(as(owner, post("/api/bookings/" + id + "/balance-intent")))

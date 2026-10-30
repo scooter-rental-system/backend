@@ -173,7 +173,7 @@ class BookingsCsvTests extends PostgresIntegrationTest {
                 "Extra Hours", "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)",
                 "Excess Distance (km)", "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)",
                 "Rental Subtotal (LKR)", "Approved Repair Reimbursement (LKR)", "Total Amount (LKR)",
-                "Amount Paid (LKR)", "Payment Method", "Payment Status", "Balance Due (LKR)", "Refund Due (LKR)",
+                "Amount Paid (LKR)", "Payment Methods", "Payment Status", "Balance Due (LKR)", "Refund Due (LKR)",
                 "Created At");
     }
 
