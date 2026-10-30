@@ -65,9 +65,13 @@ public class SecurityConfig {
         };
     }
 
+    /** SDS 6.2 / 8.5: BCrypt cost factor 12 for new hashes. BCrypt reads the cost stored in each hash, so passwords
+     * hashed earlier at the default cost 10 keep verifying unchanged; nothing is rehashed or migrated. */
+    static final int BCRYPT_STRENGTH = 12;
+
     @Bean
     PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+        return new BCryptPasswordEncoder(BCRYPT_STRENGTH);
     }
 
     @Bean

@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import com.scooterrentalkandy.spring.config.AppProperties;
+import com.scooterrentalkandy.spring.dto.GpsDtos.BookingGpsHistory;
 import com.scooterrentalkandy.spring.dto.GpsDtos.LivePosition;
 import com.scooterrentalkandy.spring.dto.GpsDtos.LocationRequest;
 import com.scooterrentalkandy.spring.dto.GpsDtos.PingRequest;
@@ -92,6 +93,12 @@ public class GpsController {
     @GetMapping("/api/admin/gps/scooters/{id}/trail")
     public Tracking trail(@PathVariable UUID id, @RequestParam(defaultValue = "6") int hours) {
         return gps.scooterTrail(id, Math.clamp(hours, 1, 168));
+    }
+
+    /** Admin-only: the GPS route of one rental (that booking's own reports). */
+    @GetMapping("/api/admin/gps/bookings/{id}/history")
+    public BookingGpsHistory bookingHistory(@PathVariable UUID id) {
+        return gps.bookingHistory(id);
     }
 
     @GetMapping("/api/admin/gps/speed-violations")

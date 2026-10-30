@@ -21,6 +21,9 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
@@ -74,6 +77,18 @@ public class GlobalExceptionHandler {
     }
 
     /** Unmapped paths (including endpoints that no longer exist) are 404, not a server error. */
+    /** An upload above the configured limits (images: 5 MB each; at most 3 repair photos). */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ErrorResponse> handleUploadTooLarge(MaxUploadSizeExceededException ex) {
+        return build(HttpStatus.CONTENT_TOO_LARGE, "Each image must be 5 MB or smaller (at most 3 repair photos).",
+                null);
+    }
+
+    @ExceptionHandler({MultipartException.class, MissingServletRequestPartException.class})
+    public ResponseEntity<ErrorResponse> handleBadUpload(Exception ex) {
+        return build(HttpStatus.BAD_REQUEST, "The upload could not be read. Please try again.", null);
+    }
+
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<ErrorResponse> handleNoResource(NoResourceFoundException ex) {
         return build(HttpStatus.NOT_FOUND, "Not found", null);
@@ -82,6 +97,24 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<ErrorResponse> handleBadCredentials(BadCredentialsException ex) {
         return build(HttpStatus.UNAUTHORIZED, "Invalid email or password", null);
+    }
+
+    /** SDS 6.1: too many failed sign-ins from this address; Retry-After says when to try again. */
+    @ExceptionHandler(LoginRateLimitedException.class)
+    public ResponseEntity<ErrorResponse> handleLoginRateLimited(LoginRateLimitedException ex) {
+        long seconds = ex.retryAfterSeconds();
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(seconds))
+                .body(new ErrorResponse(Instant.now(), HttpStatus.TOO_MANY_REQUESTS.value(),
+                        "Too many failed sign-in attempts. Please try again in " + seconds + " seconds.", null));
+    }
+
+    /** Too many requests of one kind (for example password reset requests); Retry-After says when to try again. */
+    @ExceptionHandler(RateLimitedException.class)
+    public ResponseEntity<ErrorResponse> handleRateLimited(RateLimitedException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.retryAfterSeconds()))
+                .body(new ErrorResponse(Instant.now(), HttpStatus.TOO_MANY_REQUESTS.value(), ex.getMessage(), null));
     }
 
     @ExceptionHandler(AccessDeniedException.class)

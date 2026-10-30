@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,8 +24,10 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Demo data for local development. Runs only on an empty database. No bookings or payments are seeded: a
  * booking is paid only when the payment provider confirms it, so demo history would be fake financial records.
+ * Never under the prod profile, even if app.seed.enabled is switched on there: the demo accounts have known passwords.
  */
 @Component
+@Profile("!prod")
 @ConditionalOnProperty(name = "app.seed.enabled", havingValue = "true")
 public class DataSeeder implements ApplicationRunner {
 
@@ -64,21 +67,19 @@ public class DataSeeder implements ApplicationRunner {
                 "Sri Lanka");
         user(DEMO_EMAIL, DEMO_PASSWORD, "Alex Traveller", "+94 77 123 4567", "000000000002", Role.USER,
                 "N1234567", "IDP-UK-998877", "United Kingdom");
-        user("nimal@example.com", DEMO_PASSWORD, "Nimal Perera", "+94 71 555 0101", "000000000003",
-                Role.USER, "199012345678", "B1234567", "Sri Lanka");
 
-        // Demo rates in LKR per hour and per km.
-        scooter("SRK-01", "Honda Dio", "CP BHA-1234", 110, "250", "15", 4200,
+        // Demo rates in LKR: per day, per extra hour (up to 8 hours after the whole days) and per km.
+        scooter("SRK-01", "Honda Dio", "CP BHA-1234", 110, "2500", "250", "15", 4200,
                 "Light and nimble, perfect for city rides around Kandy Lake.");
-        scooter("SRK-02", "TVS Ntorq 125", "CP BHB-5678", 125, "320", "20", 2950,
+        scooter("SRK-02", "TVS Ntorq 125", "CP BHB-5678", 125, "3200", "320", "20", 2950,
                 "Sporty 125cc with Bluetooth console. Great for the hill roads.");
-        scooter("SRK-03", "Yamaha Ray ZR", "CP BHC-9012", 125, "300", "18", 7800,
+        scooter("SRK-03", "Yamaha Ray ZR", "CP BHC-9012", 125, "3000", "300", "18", 7800,
                 "Comfortable for two; large under-seat storage.");
-        scooter("SRK-04", "Suzuki Access 125", "CP BHD-3456", 125, "300", "18", 1200,
+        scooter("SRK-04", "Suzuki Access 125", "CP BHD-3456", 125, "3000", "300", "18", 1200,
                 "Smooth and fuel-efficient. Ideal for longer trips to Ella or Nuwara Eliya.");
-        scooter("SRK-05", "Honda Dio", "CP BHE-7890", 110, "250", "15", 9100,
+        scooter("SRK-05", "Honda Dio", "CP BHE-7890", 110, "2500", "250", "15", 9100,
                 "Easy to ride; our most popular first-timer scooter.");
-        scooter("SRK-06", "Vespa VXL 125", "CP BHF-2468", 125, "450", "25", 3300,
+        scooter("SRK-06", "Vespa VXL 125", "CP BHF-2468", 125, "4500", "450", "25", 3300,
                 "Classic Italian style for the Kandy-to-Knuckles photo trip.");
 
         gearItem("2-person tent", Category.CAMPING, "Lightweight dome tent, 2.1 kg", "1500", 6);
@@ -115,13 +116,14 @@ public class DataSeeder implements ApplicationRunner {
         return users.save(u);
     }
 
-    private Scooter scooter(String code, String model, String plate, int cc, String hourly, String perKm, int odo,
-                            String description) {
+    private Scooter scooter(String code, String model, String plate, int cc, String daily, String hourly, String perKm,
+                            int odo, String description) {
         Scooter s = new Scooter();
         s.setCode(code);
         s.setModel(model);
         s.setPlateNumber(plate);
         s.setEngineCc(cc);
+        s.setDailyRate(new BigDecimal(daily));
         s.setHourlyRate(new BigDecimal(hourly));
         s.setPerKmRate(new BigDecimal(perKm));
         s.setTotalMileage(BigDecimal.valueOf(odo).setScale(2));

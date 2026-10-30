@@ -21,6 +21,7 @@ import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.TestNics;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.Test;
@@ -87,7 +88,8 @@ class AuthSecurityTests extends PostgresIntegrationTest {
     private static String registration(String email, String nic) {
         return """
                 {"email": "%s", "password": "%s", "fullName": "New Rider", "phone": "+94 70 000 0000",
-                 "nicNumber": "%s", "idDocumentNumber": "", "drivingLicenseNo": "", "country": ""}
+                 "nicNumber": "%s", "idDocumentNumber": "", "drivingLicenseNo": "", "country": "",
+                 "consent": true}
                 """.formatted(email, PASSWORD, nic);
     }
 
@@ -110,11 +112,11 @@ class AuthSecurityTests extends PostgresIntegrationTest {
     @Test
     void duplicateEmailIs409InAnyCaseWithoutInternalDetails() throws Exception {
         String id = unique();
-        mvc.perform(json(post("/api/auth/register"), registration("dup." + id + "@example.test", "A" + id)))
+        mvc.perform(json(post("/api/auth/register"), registration("dup." + id + "@example.test", TestNics.of("A" + id))))
                 .andExpect(status().isCreated());
 
         for (String email : new String[] {"dup." + id + "@example.test", "DUP." + id + "@Example.TEST"}) {
-            MvcResult result = mvc.perform(json(post("/api/auth/register"), registration(email, "B" + id)))
+            MvcResult result = mvc.perform(json(post("/api/auth/register"), registration(email, TestNics.of("B" + id))))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.status").value(409))
                     .andExpect(jsonPath("$.message").value("An account with this email already exists"))
@@ -127,11 +129,11 @@ class AuthSecurityTests extends PostgresIntegrationTest {
     @Test
     void duplicateNicIs409WithoutInternalDetails() throws Exception {
         String id = unique();
-        mvc.perform(json(post("/api/auth/register"), registration("first." + id + "@example.test", "N" + id)))
+        mvc.perform(json(post("/api/auth/register"), registration("first." + id + "@example.test", TestNics.of("N" + id))))
                 .andExpect(status().isCreated());
 
         MvcResult result = mvc.perform(json(post("/api/auth/register"),
-                        registration("second." + id + "@example.test", "N" + id)))
+                        registration("second." + id + "@example.test", TestNics.of("N" + id))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("An account with this NIC number already exists"))
                 .andExpect(jsonPath("$.token").doesNotExist())
@@ -147,7 +149,7 @@ class AuthSecurityTests extends PostgresIntegrationTest {
         String extras = """
                 "country": "", "id": "%s", "role": "SUPER_ADMIN", "passwordHash": "not-a-hash",
                  "active": false, "isActive": false, "createdAt": "2000-01-01T00:00:00\"""".formatted(UUID.randomUUID());
-        String body = registration(email, "X" + id).replace("\"country\": \"\"", extras);
+        String body = registration(email, TestNics.of("X" + id)).replace("\"country\": \"\"", extras);
 
         mvc.perform(json(post("/api/auth/register"), body))
                 .andExpect(status().isCreated())

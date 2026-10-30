@@ -87,6 +87,7 @@ class BookingCreationTests extends PostgresIntegrationTest {
         s.setModel("Test Scooter");
         s.setPlateNumber("TP-" + id);
         s.setStatus(status);
+        s.setDailyRate(new BigDecimal("2500.00"));
         s.setHourlyRate(new BigDecimal("250.00"));
         s.setPerKmRate(new BigDecimal("15.00"));
         s.setDeleted(deleted);

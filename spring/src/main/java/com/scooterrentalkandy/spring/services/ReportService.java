@@ -23,12 +23,14 @@ import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import com.scooterrentalkandy.spring.exception.ApiException;
 import com.scooterrentalkandy.spring.entity.Booking;
 import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
+import com.scooterrentalkandy.spring.entity.Invoice;
 import com.scooterrentalkandy.spring.entity.MaintenanceRecord;
 import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.entity.Scooter;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
+import com.scooterrentalkandy.spring.repository.InvoiceRepository;
 import com.scooterrentalkandy.spring.repository.MaintenanceRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
@@ -48,16 +50,23 @@ public class ReportService {
     private final MaintenanceRepository maintenance;
     private final UserRepository users;
     private final Clock clock;
+    private final PricingService pricing;
+    private final InvoiceRepository invoices;
+    private final BillingService billing;
     private final String currency;
 
     public ReportService(BookingRepository bookings, PaymentRepository payments, ScooterRepository scooters,
-                         MaintenanceRepository maintenance, UserRepository users, Clock clock, AppProperties props) {
+                         MaintenanceRepository maintenance, UserRepository users, Clock clock, PricingService pricing,
+                         InvoiceRepository invoices, BillingService billing, AppProperties props) {
         this.bookings = bookings;
         this.payments = payments;
         this.scooters = scooters;
         this.maintenance = maintenance;
         this.users = users;
         this.clock = clock;
+        this.pricing = pricing;
+        this.invoices = invoices;
+        this.billing = billing;
         this.currency = props.billing().currency();
     }
 
@@ -165,24 +174,76 @@ public class ReportService {
                 users.countByRole(Role.USER), revenue30, currency);
     }
 
-    /** All bookings created in the window as CSV (for spreadsheets/accounting). */
+    /** The bookings CSV headings, in order (human-readable, with units, for spreadsheets). */
+    static final List<String> CSV_COLUMNS = List.of("Booking Reference", "Booking ID", "Customer Name",
+            "Customer Email", "Customer NIC", "Scooter Code", "Scooter Plate", "Scooter Model", "Status",
+            "Rental Start", "Rental End", "Daily Rate (LKR)", "Extra Hour Rate (LKR)", "Charged Days", "Extra Hours",
+            "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)", "Excess Distance (km)",
+            "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)", "Rental Subtotal (LKR)",
+            "Approved Repair Reimbursement (LKR)", "Total Amount (LKR)",
+            "Amount Paid (LKR)", "Payment Methods", "Payment Status", "Balance Due (LKR)", "Refund Due (LKR)",
+            "Created At");
+
+    /** Spreadsheet-friendly local date and time (Sri Lanka time, as stored). */
+    private static final java.time.format.DateTimeFormatter CSV_TIME =
+            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+
+    /** RFC 4180 record separator. */
+    private static final String CSV_EOL = "\r\n";
+
+    /**
+     * All bookings created in the window as CSV (for spreadsheets/accounting), one row per booking. The charge
+     * breakdown (days, extra hours, distance allowance, time/distance/gear charges) is filled only for rentals that
+     * have ended, from the shared PricingService with the scooter's and gear's rates (rates are not stored on bookings,
+     * SDS 2.4); the rental subtotal and the approved repair reimbursement come from the final invoice (0 when none was
+     * approved), and the total is the billed amount after that reimbursement; total, paid and balance due are the
+     * billed amounts. Payment Methods lists every way money was received, in order (e.g. "QR_TRANSFER + CASH" when
+     * the final balance was paid in cash after a QR payment). Text cells are quoted and protected against
+     * spreadsheet formula injection; numbers are plain.
+     */
     @Transactional(readOnly = true)
     public String bookingsCsv(LocalDate from, LocalDate to) {
-        StringBuilder sb = new StringBuilder("reference,status,customer,email,scooter,plate,start_time,end_time,"
-                + "billable_hours,distance_km,total_cost,amount_paid,payment_status,balance_due,created_at\n");
-        for (Booking b : bookings.findByCreatedAtBetween(from.atStartOfDay(), to.plusDays(1).atStartOfDay())) {
+        StringBuilder sb = new StringBuilder(CSV_COLUMNS.stream().map(ReportService::csv).collect(Collectors.joining(",")))
+                .append(CSV_EOL);
+        List<Booking> rows = bookings.findByCreatedAtBetween(from.atStartOfDay(), to.plusDays(1).atStartOfDay()).stream()
+                .sorted(Comparator.comparing(Booking::getCreatedAt)).toList();
+        for (Booking b : rows) {
             Payment p = payments.findByBooking_BookingId(b.getBookingId()).orElse(null);
+            Scooter s = b.getScooter();
+            LocalDateTime ended = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
+            BigDecimal km = b.getDistanceKm() != null ? b.getDistanceKm() : b.getPendingDistanceKm();
+            BigDecimal total = b.getTotalCost() != null ? b.getTotalCost() : b.getPendingTotalCost();
+            PricingService.FinalBill bill = ended == null || km == null ? null
+                    : pricing.finalBill(s, PricingService.selectionsOf(b), b.getStartTime(), ended, km);
+            // The final invoice is the record of what was billed: subtotal, less the reimbursement, gives the total.
+            Invoice finalInvoice = bill == null ? null
+                    : invoices.findFirstByBooking_BookingIdAndKind(b.getBookingId(), Invoice.Kind.FINAL).orElse(null);
+            BigDecimal subtotal = finalInvoice != null ? finalInvoice.getSubtotal() : bill == null ? null : bill.subtotal();
+            BigDecimal reimbursement = finalInvoice != null
+                    ? finalInvoice.getSubtotal().subtract(finalInvoice.getTotal()).max(BigDecimal.ZERO).setScale(2)
+                    : bill == null ? null : BigDecimal.ZERO.setScale(2);
+            String gear = b.getGear().stream()
+                    .map(g -> g.getGearItem().getName() + " x" + g.getQuantity())
+                    .collect(Collectors.joining("; "));
             sb.append(String.join(",",
-                            csv(b.getReference()), b.getStatus().name(), csv(b.getUser().getFullName()),
-                            csv(b.getUser().getEmail()), csv(b.getScooter().getCode()),
-                            csv(b.getScooter().getPlateNumber()), b.getStartTime().toString(),
-                            b.getEndTime() == null ? "" : b.getEndTime().toString(),
-                            b.getEndTime() == null ? ""
-                                    : String.valueOf(PricingService.billableHours(b.getStartTime(), b.getEndTime())),
-                            plain(b.getDistanceKm()), plain(b.getTotalCost()),
-                            p == null ? "" : plain(p.getAmount()), p == null ? "" : p.getStatus().name(),
-                            p == null ? "" : plain(p.getBalanceDue()), b.getCreatedAt().toString()))
-                    .append('\n');
+                            csv(b.getReference()), csv(String.valueOf(b.getBookingId())),
+                            csv(b.getUser().getFullName()), csv(b.getUser().getEmail()),
+                            csv(b.getUser().getNicNumber()), csv(s.getCode()), csv(s.getPlateNumber()),
+                            csv(s.getModel()), b.getStatus().name(), b.getStartTime().format(CSV_TIME),
+                            ended == null ? "" : ended.format(CSV_TIME), plain(s.getDailyRate()),
+                            plain(s.getHourlyRate()),
+                            bill == null ? "" : String.valueOf(bill.days()),
+                            bill == null ? "" : String.valueOf(bill.extraHours()),
+                            bill == null ? "" : plain(bill.timeCost()), plain(km == null ? null : km.setScale(2)),
+                            bill == null ? "" : plain(bill.includedKm()), bill == null ? "" : plain(bill.excessKm()),
+                            plain(s.getPerKmRate()), bill == null ? "" : plain(bill.distanceCost()), csv(gear),
+                            bill == null ? "" : plain(bill.gearCost()), plain(subtotal), plain(reimbursement),
+                            plain(total),
+                            p == null ? "" : plain(p.getAmount()), p == null ? "" : csv(billing.paymentMethods(p).stream().map(Enum::name)
+                                    .collect(Collectors.joining(" + "))),
+                            p == null ? "" : p.getStatus().name(), p == null ? "" : plain(p.getBalanceDue()),
+                            p == null ? "" : plain(p.getRefundDue()), b.getCreatedAt().format(CSV_TIME)))
+                    .append(CSV_EOL);
         }
         return sb.toString();
     }
@@ -195,12 +256,15 @@ public class ReportService {
         return v == null ? "" : v.toPlainString();
     }
 
-    private static String csv(String v) {
+    /**
+     * One quoted CSV cell (RFC 4180): quotes are doubled, and commas and line breaks stay inside the quotes. A value
+     * that a spreadsheet would run as a formula (starting with = + - @, tab or carriage return) is prefixed with '.
+     */
+    static String csv(String v) {
         if (v == null) {
             return "";
         }
-        // Neutralise spreadsheet formula injection and quote embedded commas/quotes.
-        String s = v.matches("^[=+\\-@].*") ? "'" + v : v;
+        String s = v.matches("(?s)^[=+\\-@\\t\\r].*") ? "'" + v : v;
         return "\"" + s.replace("\"", "\"\"") + "\"";
     }
 }

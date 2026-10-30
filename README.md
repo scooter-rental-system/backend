@@ -1,21 +1,21 @@
-﻿# Backend Repository
+# Backend Repository
 
-  Deployed Link:http://65.0.5.214
- 
- Dummy Credentials:
- 
- USER (customer) account
-- ROLE: USER
-- EMAIL: demo@example.com
-- PASSWORD: Demo@12345
-- NIC: 000000000002.
-- 
--   ADMIN account
-- ROLE: ADMIN
-- EMAIL: admin@scooterrentkandy.lk
-- PASSWORD: Admin@12345
-- NIC: 000000000001
+Deployed link: http://65.0.5.214
 
+## Demo accounts
+
+**Admin**
+- Email: admin@scooterrentkandy.lk
+- Password: Admin@12345
+
+**Customer**
+- Email: demo@example.com
+- Password: Demo@12345
+
+These credentials are for local/demo use only and must not be used for production accounts.
+
+The accounts are created by the development seeder (`DataSeeder`) on an empty database. It never runs under the
+`prod` profile, and it creates no bookings, payments or other history.
 
 ## Running tests
 

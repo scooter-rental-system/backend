@@ -71,6 +71,7 @@ class GpsRetentionJobTests extends PostgresIntegrationTest {
         s.setCode("RT-" + id);
         s.setModel("Test Scooter");
         s.setPlateNumber("RTP-" + id);
+        s.setDailyRate(new BigDecimal("2500.00"));
         s.setHourlyRate(new BigDecimal("250.00"));
         s.setPerKmRate(new BigDecimal("15.00"));
         Booking b = new Booking();

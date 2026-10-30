@@ -59,8 +59,8 @@ class ActiveBookingIndexTests extends PostgresIntegrationTest {
 
     private UUID insertScooter() {
         UUID id = UUID.randomUUID();
-        jdbc().update("INSERT INTO scooters (scooter_id, code, model, plate_number, status, hourly_rate, per_km_rate, "
-                + "created_at) VALUES (?, ?, 'Test model', ?, 'AVAILABLE', 250, 15, now())",
+        jdbc().update("INSERT INTO scooters (scooter_id, code, model, plate_number, status, daily_rate, hourly_rate, "
+                + "per_km_rate, created_at) VALUES (?, ?, 'Test model', ?, 'AVAILABLE', 2500, 250, 15, now())",
                 id, "T-" + id.toString().substring(0, 8), "P-" + id.toString().substring(0, 8));
         return id;
     }

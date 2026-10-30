@@ -10,6 +10,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import com.scooterrentalkandy.spring.config.AppProperties;
 import com.scooterrentalkandy.spring.dto.PaymentDtos.PaymentConfigResponse;
 import com.scooterrentalkandy.spring.dto.PaymentDtos.PaymentIntentResponse;
@@ -26,6 +27,7 @@ import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.PaymentTransaction;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.PaymentProviderEventRepository;
+import com.scooterrentalkandy.spring.repository.PaymentReceiptRepository;
 import com.scooterrentalkandy.spring.repository.PaymentRepository;
 import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
 import com.scooterrentalkandy.spring.security.AuthUser;
@@ -49,7 +51,10 @@ import org.springframework.transaction.annotation.Transactional;
  * When the rental ends, the remaining balance is charged to the saved payment method and added to the same row.
  * If that fails, the balance stays due on the row and can be paid online.
  *
- * <p>The provider is optional: without one, payment operations answer 503 and nothing is simulated.
+ * <p>The provider is optional: without one, payment operations answer 503 and nothing is simulated. Cash at the
+ * rental counter ({@link CashPaymentService}) and QR payments and bank transfers ({@link ManualPaymentService}) are
+ * separate: they never reach the provider, and a payment by one of those methods is never given to the card
+ * operations here.
  *
  * <p>Safety rules:
  * <ul>
@@ -72,6 +77,7 @@ public class PaymentService {
             Event.CHARGE_REFUNDED);
 
     private final PaymentRepository payments;
+    private final PaymentReceiptRepository receipts;
     private final PaymentTransactionRepository transactions;
     private final PaymentProviderEventRepository providerEvents;
     private final BookingRepository bookings;
@@ -82,11 +88,13 @@ public class PaymentService {
     private final String currency;
 
     public PaymentService(PaymentRepository payments, PaymentTransactionRepository transactions,
+                          PaymentReceiptRepository receipts,
                           PaymentProviderEventRepository providerEvents, BookingRepository bookings,
                           ObjectProvider<PaymentGateway> gateways, PricingService pricing,
                           ApplicationEventPublisher events, Clock clock, AppProperties props) {
         this.payments = payments;
         this.transactions = transactions;
+        this.receipts = receipts;
         this.providerEvents = providerEvents;
         this.bookings = bookings;
         this.gateways = gateways;
@@ -136,8 +144,17 @@ public class PaymentService {
             p.setProvider(gateway.name());
         } else if (p.getStatus() == PaymentStatus.SUCCESS || p.getStatus() == PaymentStatus.REFUNDED) {
             throw ApiException.conflict("This booking has already been paid");
+        } else if (receipts.findPendingByBookingId(bookingId).isPresent()) {
+            // The customer may already have transferred the money: an admin verifies that first.
+            throw ApiException.conflict("A payment receipt for this booking is waiting for verification");
         } else if (p.getStripePaymentId() != null) {
             replace(gateway, p, p.getStripePaymentId());
+        }
+        if (p.getMethod().isManual()) {
+            // The customer chose cash, QR payment or bank transfer earlier but pays by card after all; nothing was
+            // recorded as received (status PENDING).
+            p.setMethod(PaymentMethod.CARD);
+            p.setProvider(gateway.name());
         }
         int attempt = attempts(p, PaymentTransaction.Kind.INITIAL) + 1;
         PaymentGateway.Intent intent = gateway.createIntent(amount, currency, customer(gateway, b.getUser()),
@@ -162,6 +179,13 @@ public class PaymentService {
         if (b.getStatus() != BookingStatus.ACTIVE || p == null || p.getBalanceDue() == null) {
             throw ApiException.conflict("This booking has no balance due");
         }
+        if (p.getMethod() == PaymentMethod.CASH) {
+            throw ApiException.conflict("This booking is paid in cash: pay the balance at the rental counter");
+        }
+        if (p.getMethod().isTransfer()) {
+            throw ApiException.conflict("This booking is paid by transfer: transfer the balance and upload the "
+                    + "receipt, or pay it at the rental counter");
+        }
         PaymentGateway gateway = gateway();
         boolean chargeProcessing = transactions.findByPayment_PaymentIdAndStatus(p.getPaymentId(),
                         PaymentTransaction.Status.PENDING).stream()
@@ -183,6 +207,26 @@ public class PaymentService {
                 null);
         return new PaymentIntentResponse(p.getPaymentId(), b.getBookingId(), BALANCE, intent.id(), intent.clientSecret(),
                 p.getBalanceDue(), currency, gateway.name());
+    }
+
+    /**
+     * Before an unpaid booking switches to QR payment or bank transfer: closes its card payment intent, if it has
+     * one, so it can no longer be paid; {@code reason} says which method replaced it. Without a configured provider
+     * the intent cannot be paid either and is closed here only. If the provider can no longer cancel it, the customer
+     * may be paying right now: 409 and nothing changes.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void closeCardAttempt(Payment p, String reason) {
+        if (p.getMethod().isManual() || p.getStripePaymentId() == null) {
+            return;
+        }
+        PaymentGateway gateway = gateways.getIfAvailable();
+        if (gateway == null) {
+            log.warn("No payment provider configured; intent {} closed locally only", p.getStripePaymentId());
+            settle(p, p.getStripePaymentId(), PaymentTransaction.Status.FAILED, reason);
+        } else {
+            replace(gateway, p, p.getStripePaymentId());
+        }
     }
 
     /**
@@ -428,8 +472,10 @@ public class PaymentService {
     }
 
     /**
-     * Only when the final cost is below what was paid (e.g. rates were lowered during the rental): the
-     * difference is refunded once and the payment amount becomes the final cost. A refusal is recorded on the
+     * Only when the final cost is below what was paid (e.g. rates were lowered during the rental, or an approved
+     * repair reimbursement reduced the bill): the difference is refunded once and the payment amount becomes the
+     * final cost. When nothing is owed at all the whole payment is refunded and recorded like a full refund (status
+     * REFUNDED, the amount stays what was paid), since a payment amount is never zero. A refusal is recorded on the
      * payment for the team to resolve.
      */
     @Transactional(propagation = Propagation.MANDATORY)
@@ -438,7 +484,13 @@ public class PaymentService {
         ChargeResult r = refundOnce(gateway(), p, p.getStripePaymentId(), excess,
                 "Final cost below amount paid for " + b.getReference(), "excess");
         if (r != null && r.outcome() != Outcome.FAILED) {
-            p.setAmount(p.getAmount().subtract(excess));
+            if (excess.compareTo(p.getAmount()) >= 0) {
+                if (r.succeeded()) {
+                    p.setStatus(PaymentStatus.REFUNDED);
+                }
+            } else {
+                p.setAmount(p.getAmount().subtract(excess));
+            }
             p.setFailureReason(null);
         }
     }
@@ -509,7 +561,15 @@ public class PaymentService {
     @Transactional(propagation = Propagation.MANDATORY)
     public void cancelOpenIntent(Booking b) {
         payments.findByBookingIdForUpdate(b.getBookingId()).ifPresent(p -> {
-            if (p.getStatus() == PaymentStatus.PENDING) {
+            if (p.getStatus() == PaymentStatus.PENDING && p.getMethod() == PaymentMethod.CASH) {
+                // No cash was received and no provider is involved: the pending cash payment just lapses.
+                p.setStatus(PaymentStatus.FAILED);
+                p.setFailureReason("Booking cancelled before the cash payment was received");
+            } else if (p.getStatus() == PaymentStatus.PENDING && p.getMethod().isTransfer()) {
+                // No transfer was approved and no provider is involved (a waiting receipt is expired by the caller).
+                p.setStatus(PaymentStatus.FAILED);
+                p.setFailureReason("Booking cancelled before the transfer was verified");
+            } else if (p.getStatus() == PaymentStatus.PENDING) {
                 PaymentGateway gateway = gateways.getIfAvailable();
                 if (gateway == null) {
                     log.warn("No payment provider configured; intent {} closed locally only", p.getStripePaymentId());
@@ -534,14 +594,22 @@ public class PaymentService {
     /** The booking's payment with its full provider transaction history. */
     @Transactional(readOnly = true)
     public Optional<PaymentResponse> forBooking(UUID bookingId) {
-        return payments.findByBooking_BookingId(bookingId).map(p -> PaymentMapper.toResponse(p, false,
-                transactions.findByPayment_PaymentIdOrderByCreatedAtAsc(p.getPaymentId()).stream()
-                        .map(PaymentMapper::toResponse).toList()));
+        return payments.findByBooking_BookingId(bookingId).map(p -> {
+            List<PaymentTransaction> recorded = transactions.findByPayment_PaymentIdOrderByCreatedAtAsc(p.getPaymentId());
+            return PaymentMapper.toResponse(p, false, recorded.stream().map(PaymentMapper::toResponse).toList(),
+                    PaymentMapper.receivedMethods(p, recorded));
+        });
     }
 
     @Transactional(readOnly = true)
     public List<PaymentResponse> recent() {
-        return payments.findTop300ByOrderByCreatedAtDesc().stream().map(p -> PaymentMapper.toResponse(p, true)).toList();
+        List<Payment> recent = payments.findTop300ByOrderByCreatedAtDesc();
+        // One query for every listed payment's transactions, for the methods each was paid by.
+        Map<UUID, List<PaymentTransaction>> recorded = transactions
+                .findByPayment_PaymentIdInOrderByCreatedAtAsc(recent.stream().map(Payment::getPaymentId).toList())
+                .stream().collect(Collectors.groupingBy(t -> t.getPayment().getPaymentId()));
+        return recent.stream().map(p -> PaymentMapper.toResponse(p, true, null,
+                PaymentMapper.receivedMethods(p, recorded.getOrDefault(p.getPaymentId(), List.of())))).toList();
     }
 
     /** The intent or charge transaction recorded for {@code intentId} on this payment, if we created it. */

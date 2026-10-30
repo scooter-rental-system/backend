@@ -1,5 +1,6 @@
 package com.scooterrentalkandy.spring.dto;
 
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -30,10 +31,14 @@ public final class BookingDtos {
     public record QuoteRequest(@NotNull UUID scooterId, List<@Valid GearSelectionRequest> gear) {
     }
 
-    /** Rates and the initial charge (1 hour + 1 gear day); the final total is known only when the rental ends. */
+    /**
+     * Rates and the initial charge (the one-hour minimum + 1 gear day); the final total is known only when the rental
+     * ends. {@code hourlyRate} is the extra-hour rate (see PricingService).
+     */
     public record Quote(
             UUID scooterId,
             String currency,
+            BigDecimal dailyRate,
             BigDecimal hourlyRate,
             BigDecimal perKmRate,
             List<GearLine> gear,
@@ -61,16 +66,32 @@ public final class BookingDtos {
     }
 
     public record ScooterSummary(UUID id, String code, String model, String plateNumber, String imageUrl,
-                                 BigDecimal hourlyRate, BigDecimal perKmRate) {
+                                 BigDecimal dailyRate, BigDecimal hourlyRate, BigDecimal perKmRate) {
     }
 
+    /**
+     * An ended rental under the pricing rule: charged days and extra hours, and the distance allowance (120 km per
+     * charged day) with the kilometres above it.
+     */
+    public record RentalBreakdown(long chargedDays, long extraHours, BigDecimal includedKm, BigDecimal excessKm) {
+    }
+
+    /**
+     * {@code method}: CARD (payment provider), CASH (received at the rental counter and recorded by an admin), or
+     * QR_TRANSFER / BANK_TRANSFER (transferred by the customer and approved by an admin from the receipt).
+     * {@code refundDue}: cash, QR or bank transfer only, money still owed back to the customer; null when none.
+     * {@code receipts}: the transfer receipts the customer uploaded, oldest first (empty for card and cash).
+     */
     public record PaymentSummary(
             PaymentStatus status,
             BigDecimal amount,
             BigDecimal balanceDue,
             String cardLast4,
             String failureReason,
-            LocalDateTime paidAt) {
+            LocalDateTime paidAt,
+            PaymentMethod method,
+            BigDecimal refundDue,
+            List<ManualPaymentDtos.ReceiptSummary> receipts) {
     }
 
     /**
@@ -91,6 +112,8 @@ public final class BookingDtos {
             LocalDateTime startTime,
             LocalDateTime endTime,
             Long billableHours,
+            /** How the ended rental is charged (null until it ends); see PricingService. */
+            RentalBreakdown breakdown,
             BigDecimal distanceKm,
             BigDecimal totalCost,
             /** Balance due only: the frozen settlement (endTime and totalCost stay null until COMPLETED). */

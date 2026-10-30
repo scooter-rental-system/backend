@@ -32,11 +32,11 @@ class AuthDtosValidationTests {
     }
 
     private static RegisterRequest register(String email, String password, String fullName, String phone, String nic) {
-        return new RegisterRequest(email, password, fullName, phone, nic, "", "", "");
+        return new RegisterRequest(email, password, fullName, phone, nic, "", "", "", true);
     }
 
     private static RegisterRequest validRegister() {
-        return register("new.customer@example.test", "secret-pass-1", "New Customer", "+94 70 000 0000", "T00000000001");
+        return register("new.customer@example.test", "secret-pass-1", "New Customer", "+94 70 000 0000", "200012345678");
     }
 
     private static Set<String> invalidFields(Object request) {
@@ -52,41 +52,70 @@ class AuthDtosValidationTests {
 
     @Test
     void registerRequiresAValidEmail() {
-        assertThat(invalidFields(register(null, "secret-pass-1", "N", "1", "T1"))).containsExactly("email");
-        assertThat(invalidFields(register("  ", "secret-pass-1", "N", "1", "T1"))).containsExactly("email");
-        assertThat(invalidFields(register("not-an-email", "secret-pass-1", "N", "1", "T1"))).containsExactly("email");
+        assertThat(invalidFields(register(null, "secret-pass-1", "N", "1", "200012345678"))).containsExactly("email");
+        assertThat(invalidFields(register("  ", "secret-pass-1", "N", "1", "200012345678"))).containsExactly("email");
+        assertThat(invalidFields(register("not-an-email", "secret-pass-1", "N", "1", "200012345678"))).containsExactly("email");
     }
 
     @Test
     void registerRequiresAPasswordOf8To72Characters() {
-        assertThat(invalidFields(register("a@example.test", null, "N", "1", "T1"))).containsExactly("password");
-        assertThat(invalidFields(register("a@example.test", " ", "N", "1", "T1"))).containsExactly("password");
-        assertThat(invalidFields(register("a@example.test", "short7!", "N", "1", "T1"))).containsExactly("password");
-        assertThat(invalidFields(register("a@example.test", "p".repeat(73), "N", "1", "T1"))).containsExactly("password");
-        assertThat(invalidFields(register("a@example.test", "p".repeat(72), "N", "1", "T1"))).isEmpty();
+        assertThat(invalidFields(register("a@example.test", null, "N", "1", "200012345678"))).containsExactly("password");
+        assertThat(invalidFields(register("a@example.test", " ", "N", "1", "200012345678"))).containsExactly("password");
+        assertThat(invalidFields(register("a@example.test", "short7!", "N", "1", "200012345678"))).containsExactly("password");
+        assertThat(invalidFields(register("a@example.test", "p".repeat(73), "N", "1", "200012345678"))).containsExactly("password");
+        assertThat(invalidFields(register("a@example.test", "p".repeat(72), "N", "1", "200012345678"))).isEmpty();
     }
 
     @Test
     void registerRequiresFullNameAndPhone() {
-        assertThat(invalidFields(register("a@example.test", "secret-pass-1", " ", "1", "T1"))).containsExactly("fullName");
-        assertThat(invalidFields(register("a@example.test", "secret-pass-1", "N", null, "T1"))).containsExactly("phone");
-        assertThat(invalidFields(register("a@example.test", "secret-pass-1", "N", "1".repeat(21), "T1")))
+        assertThat(invalidFields(register("a@example.test", "secret-pass-1", " ", "1", "200012345678"))).containsExactly("fullName");
+        assertThat(invalidFields(register("a@example.test", "secret-pass-1", "N", null, "200012345678"))).containsExactly("phone");
+        assertThat(invalidFields(register("a@example.test", "secret-pass-1", "N", "1".repeat(21), "200012345678")))
                 .containsExactly("phone");
     }
 
+    private static Set<String> invalidNic(String nic) {
+        return invalidFields(register("a@example.test", "secret-pass-1", "N", "1", nic));
+    }
+
     @Test
-    void registerRequiresANicOfAtMost20Characters() {
-        assertThat(invalidFields(register("a@example.test", "secret-pass-1", "N", "1", null))).containsExactly("nicNumber");
-        assertThat(invalidFields(register("a@example.test", "secret-pass-1", "N", "1", "   "))).containsExactly("nicNumber");
-        assertThat(invalidFields(register("a@example.test", "secret-pass-1", "N", "1", "T".repeat(21))))
-                .containsExactly("nicNumber");
-        assertThat(invalidFields(register("a@example.test", "secret-pass-1", "N", "1", "T".repeat(20)))).isEmpty();
+    void registerRequiresANic() {
+        assertThat(invalidNic(null)).containsExactly("nicNumber");
+        assertThat(invalidNic("   ")).containsExactly("nicNumber");
+    }
+
+    /** SDS 6.3: old format (9 digits + V or X) and new format (12 digits); surrounding spaces are trimmed later. */
+    @Test
+    void registerAcceptsOldAndNewSriLankanNicFormats() {
+        for (String nic : new String[] {"912345678V", "912345678v", "912345678X", "912345678x", "199112345678",
+                "  912345678V  ", " 199112345678 "}) {
+            assertThat(invalidNic(nic)).as(nic).isEmpty();
+        }
+    }
+
+    @Test
+    void registerRejectsOtherNicFormats() {
+        for (String nic : new String[] {"T1", "12345678V", "1234567890V", "123456789", "12345678901", "1234567890123",
+                "123456789A", "V123456789", "1991 12345678", "19911234567X", "ABCDEFGHIJKL", "T".repeat(21)}) {
+            assertThat(invalidNic(nic)).as(nic).containsExactly("nicNumber");
+        }
+    }
+
+    /** SDS 8.5: personal data is collected only with explicit consent at registration. */
+    @Test
+    void registerRequiresExplicitConsent() {
+        RegisterRequest noAnswer = new RegisterRequest("a@example.test", "secret-pass-1", "N", "1", "200012345678",
+                "", "", "", null);
+        RegisterRequest declined = new RegisterRequest("a@example.test", "secret-pass-1", "N", "1", "200012345678",
+                "", "", "", false);
+        assertThat(invalidFields(noAnswer)).containsExactly("consent");
+        assertThat(invalidFields(declined)).containsExactly("consent");
     }
 
     @Test
     void registerLimitsOptionalFieldsToTheColumnSize() {
-        RegisterRequest tooLong = new RegisterRequest("a@example.test", "secret-pass-1", "N", "1", "T1",
-                "x".repeat(101), "x".repeat(101), "x".repeat(101));
+        RegisterRequest tooLong = new RegisterRequest("a@example.test", "secret-pass-1", "N", "1", "200012345678",
+                "x".repeat(101), "x".repeat(101), "x".repeat(101), true);
         assertThat(invalidFields(tooLong)).containsExactlyInAnyOrder("idDocumentNumber", "drivingLicenseNo", "country");
     }
 

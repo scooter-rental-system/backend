@@ -44,7 +44,8 @@ public class Payment {
   @Column(name = "status", nullable = false, length = 20)
   private PaymentStatus status;
 
-  @Column(nullable = false)
+  /** The payment provider; null for CASH, which is received at the rental counter and recorded by an admin. */
+  @Column(name = "provider")
   private String provider;
 
   /** Stripe PaymentIntent reference ID. */
@@ -62,6 +63,13 @@ public class Payment {
   /** Payment intent the customer is confirming to pay {@code balanceDue}, if any. */
   @Column(name = "balance_intent_id")
   private String balanceIntentId;
+
+  /**
+   * CASH only: cash to hand back at the counter (the final cost is below the cash received, or a paid booking was
+   * cancelled); null when nothing is owed back. Cleared only when an admin records the cash refund.
+   */
+  @Column(name = "refund_due", precision = 10, scale = 2)
+  private BigDecimal refundDue;
 
   @Column(name = "card_last4")
   private String cardLast4;

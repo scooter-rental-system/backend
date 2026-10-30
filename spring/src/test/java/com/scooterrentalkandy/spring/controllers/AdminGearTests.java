@@ -177,6 +177,7 @@ class AdminGearTests extends PostgresIntegrationTest {
         scooter.setCode("AG-" + id);
         scooter.setModel("Test Scooter");
         scooter.setPlateNumber("AGP-" + id);
+        scooter.setDailyRate(new BigDecimal("2500.00"));
         scooter.setHourlyRate(new BigDecimal("250.00"));
         scooter.setPerKmRate(new BigDecimal("15.00"));
         Booking b = new Booking();

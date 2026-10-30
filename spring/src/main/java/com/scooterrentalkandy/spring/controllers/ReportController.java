@@ -1,6 +1,7 @@
 package com.scooterrentalkandy.spring.controllers;
 
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.Map;
 import com.scooterrentalkandy.spring.dto.ReportDtos.Dashboard;
@@ -46,10 +47,18 @@ public class ReportController {
     public ResponseEntity<String> bookingsCsv(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        // UTF-8 with a byte-order mark, so Excel opens names in any script correctly; LibreOffice and Google Sheets
+        // read it as well.
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"bookings-" + from + "-to-" + to + ".csv\"")
-                .contentType(new MediaType("text", "csv"))
-                .body(reports.bookingsCsv(from, to));
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + csvFilename(from, to) + "\"")
+                .contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
+                .body(UTF8_BOM + reports.bookingsCsv(from, to));
+    }
+
+    static final String UTF8_BOM = "﻿";
+
+    /** bookings-2026-10-27.csv for one day, bookings-2026-10-01-to-2026-10-31.csv for a range. */
+    static String csvFilename(LocalDate from, LocalDate to) {
+        return from.equals(to) ? "bookings-" + from + ".csv" : "bookings-" + from + "-to-" + to + ".csv";
     }
 }

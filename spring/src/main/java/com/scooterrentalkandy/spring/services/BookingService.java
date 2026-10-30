@@ -18,8 +18,10 @@ import com.scooterrentalkandy.spring.dto.BookingDtos.CreateBookingRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.GearSelectionRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.Quote;
 import com.scooterrentalkandy.spring.dto.BookingDtos.QuoteRequest;
+import com.scooterrentalkandy.spring.dto.BookingDtos.RentalBreakdown;
 import com.scooterrentalkandy.spring.dto.BookingDtos.SignContractRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.Stage;
+import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 import com.scooterrentalkandy.spring.exception.ApiException;
 import com.scooterrentalkandy.spring.mappers.BookingMapper;
@@ -37,6 +39,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.AuthUser;
 import com.scooterrentalkandy.spring.services.PaymentEvents.BalancePaid;
+import com.scooterrentalkandy.spring.services.PaymentEvents.CashRefunded;
 import com.scooterrentalkandy.spring.services.PaymentEvents.InitialPaymentSucceeded;
 import com.scooterrentalkandy.spring.services.PricingService.FinalBill;
 import com.scooterrentalkandy.spring.services.PricingService.GearSelection;
@@ -69,9 +72,12 @@ public class BookingService {
     private final PricingService pricing;
     private final ContractService contracts;
     private final PaymentService payments;
+    private final CashPaymentService cash;
+    private final ManualPaymentService transfers;
     private final BillingService billing;
     private final GpsService gps;
     private final MaintenanceService maintenance;
+    private final RepairService repairs;
     private final NotificationService notifications;
     private final UnpaidBookingExpiry unpaidExpiry;
     private final TransactionTemplate transaction;
@@ -80,8 +86,9 @@ public class BookingService {
 
     public BookingService(BookingRepository bookings, ScooterRepository scooters, UserRepository users,
                           GearService gearService, PricingService pricing, ContractService contracts, PaymentService payments,
-                          BillingService billing, GpsService gps, MaintenanceService maintenance,
-                          NotificationService notifications, UnpaidBookingExpiry unpaidExpiry,
+                          CashPaymentService cash, ManualPaymentService transfers, BillingService billing, GpsService gps,
+                          MaintenanceService maintenance,
+                          RepairService repairs, NotificationService notifications, UnpaidBookingExpiry unpaidExpiry,
                           PlatformTransactionManager transactionManager, Clock clock, AppProperties props) {
         this.bookings = bookings;
         this.scooters = scooters;
@@ -90,9 +97,12 @@ public class BookingService {
         this.pricing = pricing;
         this.contracts = contracts;
         this.payments = payments;
+        this.cash = cash;
+        this.transfers = transfers;
         this.billing = billing;
         this.gps = gps;
         this.maintenance = maintenance;
+        this.repairs = repairs;
         this.notifications = notifications;
         this.unpaidExpiry = unpaidExpiry;
         this.transaction = new TransactionTemplate(transactionManager);
@@ -106,7 +116,8 @@ public class BookingService {
     public Quote quote(QuoteRequest req) {
         Scooter scooter = scooters.findById(req.scooterId()).orElseThrow(() -> ApiException.notFound("Scooter"));
         InitialCharge c = pricing.initialCharge(scooter, resolveGear(req.gear(), false));
-        return new Quote(scooter.getScooterId(), currency, c.hourlyRate(), c.perKmRate(), c.gear(), c.gearCost(), c.total());
+        return new Quote(scooter.getScooterId(), currency, c.dailyRate(), c.hourlyRate(), c.perKmRate(), c.gear(),
+                c.gearCost(), c.total());
     }
 
     /** SDS 4.2 steps 1-6: validate availability and create the booking as PENDING. */
@@ -194,11 +205,22 @@ public class BookingService {
         b.setStatus(BookingStatus.ACTIVE);
         Scooter s = b.getScooter();
         s.setStatus(ScooterStatus.RENTED);
-        notifications.notify(b.getUser(), "Booking confirmed: " + b.getReference(),
-                "Your " + s.getModel() + " (" + s.getPlateNumber() + ") is yours from " + b.getStartTime().format(WHEN)
-                        + ". You were charged " + currency + " " + payments.find(b.getBookingId()).map(Payment::getAmount)
-                        .orElse(BigDecimal.ZERO) + " now; the rest is billed by the hour and kilometre when you end "
-                        + "the rental.");
+        Payment paid = payments.find(b.getBookingId()).orElse(null);
+        BigDecimal amount = paid == null ? BigDecimal.ZERO : paid.getAmount();
+        boolean inCash = paid != null && paid.getMethod() == PaymentMethod.CASH;
+        boolean byTransfer = paid != null && paid.getMethod().isTransfer();
+        notifications.notify(b.getUser(), "Booking confirmed: " + b.getReference(), inCash
+                ? "Your cash payment of " + currency + " " + amount + " was confirmed. Your " + s.getModel() + " ("
+                        + s.getPlateNumber() + ") is yours from " + b.getStartTime().format(WHEN) + "; the rest is "
+                        + "billed by the hour and kilometre when you end the rental and paid in cash at the counter."
+                : byTransfer
+                ? "Your " + ManualPaymentService.label(paid.getMethod()) + " of " + currency + " " + amount
+                        + " was approved. Your " + s.getModel() + " (" + s.getPlateNumber() + ") is yours from "
+                        + b.getStartTime().format(WHEN) + "; the rest is billed by the hour and kilometre when you end "
+                        + "the rental."
+                : "Your " + s.getModel() + " (" + s.getPlateNumber() + ") is yours from " + b.getStartTime().format(WHEN)
+                        + ". You were charged " + currency + " " + amount + " now; the rest is billed by the hour and "
+                        + "kilometre when you end the rental.");
         notifications.notifyAdmins("New booking " + b.getReference(),
                 b.getUser().getFullName() + " booked " + s.getCode() + " from " + b.getStartTime().format(WHEN)
                         + ".");
@@ -207,6 +229,16 @@ public class BookingService {
     @EventListener
     @Transactional(propagation = Propagation.MANDATORY)
     public void onBalancePaid(BalancePaid event) {
+        Booking b = find(event.bookingId());
+        if (b.getStatus() == BookingStatus.ACTIVE && b.getEndedAt() != null) {
+            finishRental(b);
+        }
+    }
+
+    /** The cash owed back at the end of a rental was handed over: the rental completes. */
+    @EventListener
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void onCashRefunded(CashRefunded event) {
         Booking b = find(event.bookingId());
         if (b.getStatus() == BookingStatus.ACTIVE && b.getEndedAt() != null) {
             finishRental(b);
@@ -225,7 +257,10 @@ public class BookingService {
      * moves, so every later attempt charges exactly the same amount. The second charges the remaining balance (or
      * refunds an excess) and completes the booking. If the charge is declined the booking stays ACTIVE with the
      * balance due (402) and calling this again retries the same amount. If the provider cannot be reached, only
-     * the second transaction rolls back and a retry repeats the charge with the same idempotency key.
+     * the second transaction rolls back and a retry repeats the charge with the same idempotency key. A rental paid in
+     * cash, by QR payment or by bank transfer is not charged: the balance due (or the refund owed) waits on the
+     * payment until an admin confirms the cash, approves a transfer receipt or records the refund, and the booking
+     * stays ACTIVE until then.
      */
     public BookingResponse complete(UUID bookingId, AuthUser user) {
         transaction.executeWithoutResult(status -> freezeSettlement(bookingId, user));
@@ -236,6 +271,16 @@ public class BookingService {
         return settlement.booking();
     }
 
+    /**
+     * Only the first step of {@link #complete}: fixes the end time, the GPS distance and the final total and issues
+     * the final invoice, without charging or refunding anything. Used by the viva demo profile, whose rentals have
+     * no payment to settle against; the booking stays ACTIVE with the final total pending.
+     */
+    public BookingResponse endWithoutCollecting(UUID bookingId, AuthUser user) {
+        transaction.executeWithoutResult(status -> freezeSettlement(bookingId, user));
+        return transaction.execute(status -> toResponse(find(bookingId)));
+    }
+
     private void freezeSettlement(UUID bookingId, AuthUser user) {
         bookings.findByIdForUpdate(bookingId).orElseThrow(() -> ApiException.notFound("Booking"));
         Booking b = findOwned(bookingId, user);
@@ -243,14 +288,20 @@ public class BookingService {
             throw ApiException.conflict("Only an active rental can be ended (status " + b.getStatus() + ")");
         }
         if (b.getEndedAt() == null) {
+            // A self-arranged repair still under review could change the reimbursement: resolve it first, so the
+            // bill is never calculated without it (and cannot change afterwards).
+            if (repairs.hasUnresolvedReimbursement(b.getBookingId())) {
+                throw ApiException.conflict(RepairService.UNRESOLVED_REPAIRS);
+            }
             LocalDateTime end = now();
             if (end.isBefore(b.getStartTime())) {
                 throw ApiException.conflict("This rental starts at " + b.getStartTime().format(WHEN)
                         + "; cancel the booking instead of ending it");
             }
             BigDecimal km = gps.rentalDistanceKm(b.getBookingId(), b.getStartTime(), end);
+            // The rental subtotal less the repair reimbursement approved so far (RESOLVED reports), never below zero.
             FinalBill bill = pricing.finalBill(b.getScooter(), PricingService.selectionsOf(b), b.getStartTime(), end,
-                    km);
+                    km, repairs.approvedReimbursement(b.getBookingId()));
             // Frozen settlement: kept on the ACTIVE booking until the balance is collected (SDS: endTime and
             // totalCost stay NULL until COMPLETED).
             b.setEndedAt(end);
@@ -267,6 +318,13 @@ public class BookingService {
             throw ApiException.conflict("Only an active rental can be ended (status " + b.getStatus() + ")");
         }
         Payment p = payments.find(b.getBookingId()).orElseThrow(() -> new IllegalStateException("No payment"));
+        if (p.getMethod().isManual()) {
+            // Cash, QR payment or bank transfer: the balance (or the refund owed) waits for an admin to confirm it.
+            if (cash.settleAtEnd(b)) {
+                finishRental(b);
+            }
+            return new Settlement(toResponse(b), null);
+        }
         BigDecimal remaining = b.getPendingTotalCost().subtract(p.getAmount());
         if (remaining.signum() > 0) {
             if (!payments.chargeRemainingBalance(b, remaining)) {
@@ -315,6 +373,7 @@ public class BookingService {
         switch (b.getStatus()) {
             case PENDING -> {
                 markCancelled(b);
+                transfers.expirePendingReceipt(b, false);
                 payments.cancelOpenIntent(b);
             }
             case ACTIVE -> {
@@ -323,12 +382,21 @@ public class BookingService {
                     throw ApiException.conflict("This rental has started and can no longer be cancelled; end it instead");
                 }
                 markCancelled(b);
-                Payment refund = payments.refundInFull(b, "Booking " + b.getReference() + " cancelled");
+                PaymentMethod method = payments.find(b.getBookingId()).map(Payment::getMethod).orElse(null);
+                boolean inCash = method == PaymentMethod.CASH;
+                boolean byTransfer = method != null && method.isTransfer();
+                Payment refund = inCash || byTransfer ? cash.refundDueOnCancellation(b)
+                        : payments.refundInFull(b, "Booking " + b.getReference() + " cancelled");
                 b.getScooter().setStatus(ScooterStatus.AVAILABLE);
                 billing.voidEarlierRentalInvoice(b.getBookingId());
                 BigDecimal refunded = refund == null ? BigDecimal.ZERO : refund.getAmount();
-                notifications.notify(b.getUser(), "Booking cancelled: " + b.getReference(),
-                        "Your booking has been cancelled. A refund of " + currency + " " + refunded
+                notifications.notify(b.getUser(), "Booking cancelled: " + b.getReference(), inCash
+                        ? "Your booking has been cancelled. A cash refund of " + currency + " " + refunded
+                                + " is due to you at the rental counter."
+                        : byTransfer
+                        ? "Your booking has been cancelled. A refund of " + currency + " " + refunded
+                                + " is due to you; our team will send it and let you know."
+                        : "Your booking has been cancelled. A refund of " + currency + " " + refunded
                                 + " has been issued.");
                 notifications.notifyAdmins("Booking cancelled " + b.getReference(),
                         b.getUser().getFullName() + " cancelled their booking for " + b.getScooter().getCode());
@@ -440,7 +508,19 @@ public class BookingService {
         BigDecimal initialCharge = pricing.initialCharge(b.getScooter(), PricingService.selectionsOf(b)).total();
         LocalDateTime ended = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
         Long hours = ended == null ? null : PricingService.billableHours(b.getStartTime(), ended);
-        return BookingMapper.toResponse(b, p, stage(b, p), hours, initialCharge);
+        return BookingMapper.toResponse(b, p, transfers.forPayment(p), stage(b, p), hours, breakdown(b, ended),
+                initialCharge);
+    }
+
+    /** The pricing rule applied to an ended rental (the settled distance, or the frozen one while a balance is due). */
+    private static RentalBreakdown breakdown(Booking b, LocalDateTime ended) {
+        BigDecimal km = b.getDistanceKm() != null ? b.getDistanceKm() : b.getPendingDistanceKm();
+        if (ended == null || km == null) {
+            return null;
+        }
+        PricingService.ScooterTime time = PricingService.scooterTime(b.getStartTime(), ended);
+        PricingService.Distance d = PricingService.distance(time.days(), km);
+        return new RentalBreakdown(time.days(), time.extraHours(), d.includedKm(), d.excessKm());
     }
 
     private Stage stage(Booking b, Payment p) {

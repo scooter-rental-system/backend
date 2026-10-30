@@ -3,8 +3,6 @@ package com.scooterrentalkandy.spring.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
@@ -12,6 +10,8 @@ import java.util.Optional;
 import javax.crypto.SecretKey;
 import com.scooterrentalkandy.spring.config.AppProperties;
 import com.scooterrentalkandy.spring.entity.User;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -20,8 +20,9 @@ public class JwtService {
     private final SecretKey key;
     private final long expirationMinutes;
 
-    public JwtService(AppProperties props) {
-        this.key = Keys.hmacShaKeyFor(props.jwt().secret().getBytes(StandardCharsets.UTF_8));
+    /** The key comes from JWT_SECRET, validated by {@link JwtSecretPolicy} (strict under the prod profile). */
+    public JwtService(AppProperties props, Environment environment) {
+        this.key = JwtSecretPolicy.resolve(props.jwt().secret(), environment.acceptsProfiles(Profiles.of("prod")));
         this.expirationMinutes = props.jwt().expirationMinutes();
     }
 

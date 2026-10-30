@@ -4,6 +4,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.dto.UserDtos.AuthResponse;
+import com.scooterrentalkandy.spring.dto.UserDtos.ChangePasswordRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.LoginRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.RegisterRequest;
 import com.scooterrentalkandy.spring.dto.UserDtos.UpdateProfileRequest;
@@ -31,6 +32,9 @@ public class AuthService {
     static final String DUPLICATE_NIC = "An account with this NIC number already exists";
     static final String ACCOUNT_DEACTIVATED = "This account has been deactivated";
     static final String WELCOME_SUBJECT = "Welcome to Scooter Rent Kandy";
+    static final String CURRENT_PASSWORD_WRONG = "The current password is incorrect";
+    static final String SAME_PASSWORD = "The new password must be different from the current password";
+    static final String PASSWORD_CHANGED_SUBJECT = "Your password was changed";
 
     private final UserRepository users;
     private final PasswordEncoder passwordEncoder;
@@ -51,7 +55,8 @@ public class AuthService {
     @Transactional
     public AuthResponse register(RegisterRequest req) {
         String email = normalizeEmail(req.email());
-        String nic = req.nicNumber().trim();
+        // Old-format NICs end in V or X; stored upper-case so the same number is always the same NIC.
+        String nic = req.nicNumber().trim().toUpperCase(Locale.ROOT);
         if (users.existsByEmailIgnoreCase(email)) {
             throw ApiException.conflict(DUPLICATE_EMAIL);
         }
@@ -113,6 +118,25 @@ public class AuthService {
         user.setDrivingLicenseNo(blankToNull(req.drivingLicenseNo()));
         user.setCountry(blankToNull(req.country()));
         return UserResponse.from(users.saveAndFlush(user));
+    }
+
+    /**
+     * Changes the signed-in user's password after checking the current one. A wrong current password is a 400 (not a
+     * 401: the session is valid). The new hash uses the application's PasswordEncoder (BCrypt cost 12).
+     */
+    @Transactional
+    public void changePassword(UUID userId, ChangePasswordRequest req) {
+        User user = find(userId);
+        if (!passwordEncoder.matches(req.currentPassword(), user.getPasswordHash())) {
+            throw ApiException.badRequest(CURRENT_PASSWORD_WRONG);
+        }
+        if (passwordEncoder.matches(req.newPassword(), user.getPasswordHash())) {
+            throw ApiException.badRequest(SAME_PASSWORD);
+        }
+        user.setPasswordHash(passwordEncoder.encode(req.newPassword()));
+        users.saveAndFlush(user);
+        notifications.notify(user, PASSWORD_CHANGED_SUBJECT, "Your Scooter Rent Kandy password was changed. If this was "
+                + "not you, contact us straight away.");
     }
 
     private User find(UUID userId) {

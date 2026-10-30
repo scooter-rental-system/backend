@@ -32,12 +32,12 @@ class DemoSeederNicTests extends PostgresIntegrationTest {
     private DataSource dataSource;
 
     @Test
-    void seedsTheThreeDemoUsersWithDistinctNics() {
+    void seedsOnlyTheDemoAdminAndTheDemoCustomerWithDistinctNics() {
         List<User> seeded = users.findAll();
 
-        assertThat(seeded).hasSize(3);
-        assertThat(seeded).extracting(User::getNicNumber)
-                .containsExactlyInAnyOrder("000000000001", "000000000002", "000000000003");
+        assertThat(seeded).extracting(User::getEmail)
+                .containsExactlyInAnyOrder(DataSeeder.ADMIN_EMAIL, DataSeeder.DEMO_EMAIL);
+        assertThat(seeded).extracting(User::getNicNumber).containsExactlyInAnyOrder("000000000001", "000000000002");
     }
 
     @Test

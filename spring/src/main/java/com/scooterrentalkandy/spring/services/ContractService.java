@@ -16,7 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class ContractService {
 
-    public static final String TERMS_VERSION = "2026.2";
+    public static final String TERMS_VERSION = "2026.3";
 
     private static final DateTimeFormatter WHEN = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm");
 
@@ -30,10 +30,16 @@ public class ContractService {
             1. VEHICLE. The Company rents to the Renter scooter %s (%s), plate %s, from %s until the
                Renter ends the rental, pickup at %s. Gear: %s.
 
-            2. CHARGES. LKR %s per hour (each started hour, minimum one hour) plus LKR %s per kilometre
-               travelled, measured from the scooter's GPS logs, plus each gear item's daily rate for each
-               started 24 hours. An initial charge of LKR %s (one hour and one day of gear) is taken when
-               booking; the balance is charged to the same payment method when the rental ends.
+            2. CHARGES. Scooter time: LKR %s for each complete 24 hours; time after the complete days is
+               charged at LKR %s per started hour when it is 8 hours or less, or as one more day when it is
+               more than 8 hours (minimum one hour). Distance: the rental includes 120 km, and each further
+               charged day adds another 120 km; only kilometres above that allowance, measured from the
+               scooter's GPS logs, are charged, at LKR %s per km. Gear: each item's daily rate for each
+               complete 24 hours; up to 12 further hours are included and more than 12 hours is one more day
+               (minimum one day). The rental has no fixed end: an initial charge of LKR %s (the one-hour
+               minimum and one day of gear) is taken when booking. When the Renter ends the rental, the
+               final total is calculated and the difference is charged to, or refunded to, the same payment
+               method.
 
             3. LICENCE AND RIDERS. The Renter confirms they hold a licence valid for riding this vehicle
                in Sri Lanka (including an International Driving Permit or Sri Lankan recognition permit
@@ -108,7 +114,7 @@ public class ContractService {
                 customer.getFullName(), orDash(customer.getIdDocumentNumber()), orDash(customer.getDrivingLicenseNo()),
                 scooter.getCode(), scooter.getModel(), scooter.getPlateNumber(), b.getStartTime().format(WHEN),
                 b.getPickupLocation() == null ? "Kandy office" : b.getPickupLocation(), gearText(b),
-                plain(scooter.getHourlyRate()), plain(scooter.getPerKmRate()),
+                plain(scooter.getDailyRate()), plain(scooter.getHourlyRate()), plain(scooter.getPerKmRate()),
                 plain(pricing.initialCharge(scooter, PricingService.selectionsOf(b)).total()));
     }
 

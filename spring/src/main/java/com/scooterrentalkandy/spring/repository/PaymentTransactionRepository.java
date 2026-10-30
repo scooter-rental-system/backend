@@ -1,5 +1,6 @@
 package com.scooterrentalkandy.spring.repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -11,6 +12,9 @@ import org.springframework.data.repository.query.Param;
 public interface PaymentTransactionRepository extends JpaRepository<PaymentTransaction, UUID> {
 
     List<PaymentTransaction> findByPayment_PaymentIdOrderByCreatedAtAsc(UUID paymentId);
+
+    /** The transactions of several payments at once, oldest first (for a payment list). */
+    List<PaymentTransaction> findByPayment_PaymentIdInOrderByCreatedAtAsc(Collection<UUID> paymentIds);
 
     Optional<PaymentTransaction> findFirstByPayment_PaymentIdAndProviderRefOrderByCreatedAtDesc(UUID paymentId, String providerRef);
 

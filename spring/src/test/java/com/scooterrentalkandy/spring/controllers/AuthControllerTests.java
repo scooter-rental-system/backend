@@ -14,6 +14,7 @@ import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.TestNics;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -70,7 +71,7 @@ class AuthControllerTests extends PostgresIntegrationTest {
                 "nicNumber": "%s",""".formatted(nic);
         return """
                 {"email": "%s", "password": "%s", "fullName": "New Rider", "phone": "+94 70 000 0000", %s
-                 "idDocumentNumber": "", "drivingLicenseNo": "", "country": "Sri Lanka"}
+                 "idDocumentNumber": "", "drivingLicenseNo": "", "country": "Sri Lanka", "consent": true}
                 """.formatted(email, password, nicField);
     }
 
@@ -84,7 +85,7 @@ class AuthControllerTests extends PostgresIntegrationTest {
     void registerCreatesAUserAndReturns201WithTokenAndUser() throws Exception {
         String id = unique();
         mvc.perform(json(post("/api/auth/register"), registration("New." + id + "@Example.Test", "secret-pass-1",
-                        "R" + id)))
+                        TestNics.of("R" + id))))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.token").isString())
                 .andExpect(jsonPath("$.user.id").isString())
@@ -97,13 +98,13 @@ class AuthControllerTests extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.user.nicNumber").doesNotExist());
 
         assertThat(users.findByEmailIgnoreCase("new." + id + "@example.test")).get()
-                .satisfies(u -> assertThat(u.getNicNumber()).isEqualTo("R" + id));
+                .satisfies(u -> assertThat(u.getNicNumber()).isEqualTo(TestNics.of("R" + id)));
     }
 
     @Test
     void registerIgnoresAClientSuppliedRole() throws Exception {
         String id = unique();
-        String body = registration("role." + id + "@example.test", "secret-pass-1", "R" + id)
+        String body = registration("role." + id + "@example.test", "secret-pass-1", TestNics.of("R" + id))
                 .replace("\"country\"", "\"role\": \"ADMIN\", \"country\"");
 
         mvc.perform(json(post("/api/auth/register"), body))
@@ -121,7 +122,7 @@ class AuthControllerTests extends PostgresIntegrationTest {
 
     @Test
     void registerWithAnInvalidEmailIs400() throws Exception {
-        mvc.perform(json(post("/api/auth/register"), registration("not-an-email", "secret-pass-1", "R" + unique())))
+        mvc.perform(json(post("/api/auth/register"), registration("not-an-email", "secret-pass-1", TestNics.of("R" + unique()))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors.email").exists());
     }
@@ -129,9 +130,43 @@ class AuthControllerTests extends PostgresIntegrationTest {
     @Test
     void registerWithAShortPasswordIs400() throws Exception {
         mvc.perform(json(post("/api/auth/register"), registration("short." + unique() + "@example.test", "short7!",
-                        "R" + unique())))
+                        TestNics.of("R" + unique()))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors.password").exists());
+    }
+
+    @Test
+    void registerWithoutConsentIs400AndCreatesNoAccount() throws Exception {
+        String email = "no.consent." + unique() + "@example.test";
+        String body = registration(email, "secret-pass-1", TestNics.of("C" + unique()))
+                .replace("\"consent\": true", "\"consent\": false");
+        mvc.perform(json(post("/api/auth/register"), body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.consent").exists());
+        mvc.perform(json(post("/api/auth/register"), body.replace(", \"consent\": false", "")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.consent").exists());
+        assertThat(users.findByEmailIgnoreCase(email)).isEmpty();
+    }
+
+    @Test
+    void registerWithAnInvalidNicFormatIs400() throws Exception {
+        mvc.perform(json(post("/api/auth/register"), registration("bad.nic." + unique() + "@example.test",
+                        "secret-pass-1", "R" + unique())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.nicNumber").value(
+                        "must be a Sri Lankan NIC: 9 digits followed by V or X, or 12 digits"));
+    }
+
+    @Test
+    void registerAcceptsAnOldFormatNicAndStoresItUpperCase() throws Exception {
+        String id = unique();
+        String oldNic = TestNics.of("O" + id).substring(0, 9);
+        mvc.perform(json(post("/api/auth/register"), registration("old.nic." + id + "@example.test", "secret-pass-1",
+                        " " + oldNic + "v ")))
+                .andExpect(status().isCreated());
+        assertThat(users.findByEmailIgnoreCase("old.nic." + id + "@example.test")).get()
+                .satisfies(u -> assertThat(u.getNicNumber()).isEqualTo(oldNic + "V"));
     }
 
     // ── Login ─────────────────────────────────────────────────────────────────

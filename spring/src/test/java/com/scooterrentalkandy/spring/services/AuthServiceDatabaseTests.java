@@ -14,6 +14,7 @@ import com.scooterrentalkandy.spring.exception.ApiException;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.TestNics;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -43,7 +44,8 @@ class AuthServiceDatabaseTests extends PostgresIntegrationTest {
     private NotificationService notifications;
 
     private static RegisterRequest registration(String email, String nic) {
-        return new RegisterRequest(email, "secret-pass-1", "Race Rider", "+94 70 000 0000", nic, "", "", "");
+        return new RegisterRequest(email, "secret-pass-1", "Race Rider", "+94 70 000 0000", TestNics.of(nic), "", "", "",
+                true);
     }
 
     private static String unique() {
@@ -75,7 +77,7 @@ class AuthServiceDatabaseTests extends PostgresIntegrationTest {
         assertThat(users.findById(registered.user().id())).get()
                 .satisfies(u -> {
                     assertThat(u.getEmail()).isEqualTo("round.trip." + id + "@example.test");
-                    assertThat(u.getNicNumber()).isEqualTo("R" + id);
+                    assertThat(u.getNicNumber()).isEqualTo(TestNics.of("R" + id));
                     assertThat(u.getRole()).isEqualTo(Role.USER);
                     assertThat(encoder.matches("secret-pass-1", u.getPasswordHash())).isTrue();
                 });
