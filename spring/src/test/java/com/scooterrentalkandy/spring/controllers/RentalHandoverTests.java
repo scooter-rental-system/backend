@@ -592,6 +592,65 @@ class RentalHandoverTests extends PostgresIntegrationTest {
                 .satisfies(c -> assertThat(c.amount()).isEqualByComparingTo("200.00"));
     }
 
+    /**
+     * The manual browser test, exactly: a repair saved with an approved 200 but Status still Reported keeps blocking
+     * the end; saved as Resolved it is persisted (the PUT answer and a fresh GET agree), the end is no longer blocked,
+     * 2752 - 2586 = 166 km is billed, and the 200 is deducted once.
+     */
+    @Test
+    void theManualTestRepairResolvedWithTwoHundredThenEndedAt2752() throws Exception {
+        UUID id = rentalStarted150MinutesAgo("2586.0");
+        String report = mvc.perform(json(as(customer, post("/api/bookings/" + id + "/repairs")),
+                        "{\"description\": \"Puncture repaired at a roadside shop\", \"selfArranged\": true, "
+                                + "\"claimedAmount\": 250}"))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        String reportId = JsonPath.read(report, "$.id");
+        String review = "{\"status\": \"%s\", \"adminNote\": \"sorry, thank you\", \"approvedAmount\": 200}";
+
+        // 1. Approved amount saved, Status left on Reported: still unresolved, the end is refused.
+        mvc.perform(json(as(admin, put("/api/admin/repairs/" + reportId)), review.formatted("REPORTED")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("REPORTED"));
+        end(admin, id, "2752.0").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        com.scooterrentalkandy.spring.services.RepairService.UNRESOLVED_REPAIRS));
+        assertThat(booking(id).getEndedAt()).isNull();
+
+        // 2. REPORTED -> RESOLVED with 200: the answer and a fresh GET both say RESOLVED, 200.
+        mvc.perform(json(as(admin, put("/api/admin/repairs/" + reportId)), review.formatted("RESOLVED")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RESOLVED"))
+                .andExpect(jsonPath("$.approvedAmount").value(200.00));
+        em.flush();
+        em.clear();
+        mvc.perform(as(admin, get("/api/bookings/" + id + "/repairs"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].status").value("RESOLVED"))
+                .andExpect(jsonPath("$[0].approvedAmount").value(200.00))
+                .andExpect(jsonPath("$[0].adminNote").value("sorry, thank you"));
+        mvc.perform(as(admin, get("/api/admin/repairs"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '" + reportId + "')].status").value("RESOLVED"));
+
+        // 3-5. No longer blocked: 166 km, 3 hours x 250 = 750, 46 km over 120 x 15 = 690, less 200 once = 1,240.
+        end(admin, id, "2752.0").andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.startOdometerKm").value(2586.0))
+                .andExpect(jsonPath("$.endOdometerKm").value(2752.0))
+                .andExpect(jsonPath("$.distanceKm").value(166.00))
+                .andExpect(jsonPath("$.breakdown.excessKm").value(46.00))
+                .andExpect(jsonPath("$.totalCost").value(1240.00));
+        Invoice inv = invoices.findFirstByBooking_BookingIdAndKind(id, Invoice.Kind.FINAL).orElseThrow();
+        assertThat(inv.getSubtotal()).isEqualByComparingTo("1440.00");
+        assertThat(inv.getTotal()).isEqualByComparingTo("1240.00");
+        assertThat(inv.getLines()).filteredOn(l -> l.getDescription().startsWith("Approved repair reimbursement"))
+                .singleElement().satisfies(l -> assertThat(l.getAmount()).isEqualByComparingTo("-200.00"));
+        assertThat(gateway.charges()).singleElement()
+                .satisfies(c -> assertThat(c.amount()).isEqualByComparingTo("990.00"));
+        // The bill is frozen: the reimbursement can no longer change.
+        mvc.perform(json(as(admin, put("/api/admin/repairs/" + reportId)),
+                        "{\"status\": \"RESOLVED\", \"adminNote\": null, \"approvedAmount\": 250}"))
+                .andExpect(status().isConflict());
+    }
+
     @Test
     void aValidEndingReadingIsBilledAsReadWhateverTheAverageSpeed() throws Exception {
         UUID id = rentalStarted150MinutesAgo("1000.0");
