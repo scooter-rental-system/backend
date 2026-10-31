@@ -29,6 +29,7 @@ import com.scooterrentalkandy.spring.repository.PaymentTransactionRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import com.scooterrentalkandy.spring.support.TestPaymentGateway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -156,6 +157,9 @@ class BookingExpiryTests extends PostgresIntegrationTest {
         b.setScooter(scooter);
         b.setStatus(status);
         b.setStartTime(LocalDateTime.now().plusDays(1));
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setPickupLocation("Test pickup");
         b.setCreatedAt(createdAt);
         if (status == BookingStatus.COMPLETED) {
@@ -252,14 +256,16 @@ class BookingExpiryTests extends PostgresIntegrationTest {
     }
 
     @Test
-    void activeCancelledAndCompletedBookingsAreNotTouched() {
+    void readyActiveCancelledAndCompletedBookingsAreNotTouched() {
         LocalDateTime old = cutoff.minusHours(5);
+        Booking ready = saveBooking(BookingStatus.READY_FOR_PICKUP, old, saveScooter(), null);
         Booking active = saveBooking(BookingStatus.ACTIVE, old, saveScooter(), null);
         Booking cancelled = saveBooking(BookingStatus.CANCELLED, old, saveScooter(), null);
         Booking completed = saveBooking(BookingStatus.COMPLETED, old, saveScooter(), null);
 
         assertThat(bookingService.expireUnpaid(cutoff)).isZero();
 
+        assertThat(reload(ready).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         assertThat(reload(active).getStatus()).isEqualTo(BookingStatus.ACTIVE);
         assertThat(reload(cancelled).getStatus()).isEqualTo(BookingStatus.CANCELLED);
         assertThat(reload(cancelled).getCancelledAt()).isNull();
@@ -314,7 +320,7 @@ class BookingExpiryTests extends PostgresIntegrationTest {
         assertThat(candidates).contains(stale.getBookingId());
 
         Booking paid = reload(stale);
-        paid.setStatus(BookingStatus.ACTIVE);
+        paid.setStatus(BookingStatus.READY_FOR_PICKUP);
         bookings.saveAndFlush(paid);
         Payment succeeded = payments.findById(payment.getPaymentId()).orElseThrow();
         succeeded.setStatus(PaymentStatus.SUCCESS);
@@ -323,7 +329,7 @@ class BookingExpiryTests extends PostgresIntegrationTest {
         assertThat(unpaidExpiry.expire(stale.getBookingId(), cutoff)).isFalse();
 
         Booking after = reload(stale);
-        assertThat(after.getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(after.getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         assertThat(after.getCancelledAt()).isNull();
         assertThat(payments.findById(payment.getPaymentId()).orElseThrow().getStatus())
                 .isEqualTo(PaymentStatus.SUCCESS);

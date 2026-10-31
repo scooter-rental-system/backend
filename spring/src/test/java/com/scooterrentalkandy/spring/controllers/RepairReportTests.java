@@ -21,6 +21,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import com.scooterrentalkandy.spring.support.TestNics;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -88,6 +89,9 @@ class RepairReportTests extends PostgresIntegrationTest {
         b.setScooter(s);
         b.setStatus(status);
         b.setStartTime(start);
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setContractSigned(true);
         b.setPickupLocation("Kandy office");
         if (status == BookingStatus.COMPLETED) {
@@ -168,7 +172,7 @@ class RepairReportTests extends PostgresIntegrationTest {
         String body = "{\"description\": \"Brakes feel soft\", \"selfArranged\": false}";
         for (Booking b : new Booking[] {
                 rental(customer, BookingStatus.PENDING, LocalDateTime.now().minusHours(1)),
-                rental(customer, BookingStatus.ACTIVE, LocalDateTime.now().plusDays(1)),
+                rental(customer, BookingStatus.READY_FOR_PICKUP, LocalDateTime.now().minusHours(1)),
                 rental(customer, BookingStatus.COMPLETED, LocalDateTime.now().minusDays(2))}) {
             mvc.perform(as(customer, json(post("/api/bookings/" + b.getBookingId() + "/repairs"), body)))
                     .andExpect(status().isConflict())

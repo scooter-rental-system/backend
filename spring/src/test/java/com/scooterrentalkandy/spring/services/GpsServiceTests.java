@@ -21,6 +21,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.SpeedViolationRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -93,6 +94,9 @@ class GpsServiceTests extends PostgresIntegrationTest {
         b.setScooter(scooter);
         b.setStatus(status);
         b.setStartTime(start);
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setPickupLocation("Test pickup");
         if (status == BookingStatus.COMPLETED) {
             b.setEndTime(start.plusHours(1));
@@ -147,7 +151,8 @@ class GpsServiceTests extends PostgresIntegrationTest {
         Scooter pending = saveScooter();
         booking(pending, BookingStatus.PENDING, now.minusHours(1));
         Scooter notStarted = saveScooter();
-        booking(notStarted, BookingStatus.ACTIVE, now.plusHours(2));
+        // Paid, its planned pickup time passed, but the rental has not actually started.
+        booking(notStarted, BookingStatus.READY_FOR_PICKUP, now.minusHours(2));
         Scooter completed = saveScooter();
         booking(completed, BookingStatus.COMPLETED, now.minusHours(3));
         Scooter cancelled = saveScooter();

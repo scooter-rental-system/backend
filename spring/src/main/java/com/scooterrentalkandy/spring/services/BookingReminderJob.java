@@ -48,14 +48,15 @@ public class BookingReminderJob {
     }
 
     /**
-     * 08:00 Colombo time: reminders for paid rentals that start tomorrow (Colombo date). Rentals are open-ended,
-     * so there is no due date. Returns how many reminders this run sent.
+     * 08:00 Colombo time: reminders for paid bookings waiting for pickup (READY_FOR_PICKUP) whose planned pickup time
+     * is tomorrow (Colombo date). Rentals are open-ended, so there is no due date. Returns how many reminders this run
+     * sent.
      */
     @Scheduled(cron = "0 0 8 * * *", zone = "Asia/Colombo")
     public int dailyReminders() {
         LocalDate tomorrow = LocalDate.now(clock.withZone(COLOMBO)).plusDays(1);
         int sent = 0;
-        for (UUID id : bookings.findReminderCandidates(BookingStatus.ACTIVE, tomorrow.atStartOfDay(),
+        for (UUID id : bookings.findReminderCandidates(BookingStatus.READY_FOR_PICKUP, tomorrow.atStartOfDay(),
                 tomorrow.plusDays(1).atStartOfDay())) {
             try {
                 if (Boolean.TRUE.equals(transaction.execute(status -> remind(id)))) {
@@ -70,14 +71,15 @@ public class BookingReminderJob {
     }
 
     private boolean remind(UUID id) {
-        if (bookings.claimReminder(id, BookingStatus.ACTIVE, LocalDateTime.now(clock)) != 1) {
+        if (bookings.claimReminder(id, BookingStatus.READY_FOR_PICKUP, LocalDateTime.now(clock)) != 1) {
             return false;
         }
         Booking b = bookings.findById(id).orElseThrow();
-        notifications.notify(b.getUser(), "Rental starts tomorrow: " + b.getReference(),
-                "Your " + b.getScooter().getModel() + " is ready from " + b.getStartTime().format(TIME)
+        notifications.notify(b.getUser(), "Pickup tomorrow: " + b.getReference(),
+                "Your " + b.getScooter().getModel() + " is ready for pickup from " + b.getStartTime().format(TIME)
                         + " tomorrow" + (b.getPickupLocation() == null ? "." : " at " + b.getPickupLocation() + ".")
-                        + " Bring your driving licence and ID.");
+                        + " Bring your driving licence and ID. Your rental starts when our team hands the scooter "
+                        + "over and you confirm the start on your booking.");
         return true;
     }
 }

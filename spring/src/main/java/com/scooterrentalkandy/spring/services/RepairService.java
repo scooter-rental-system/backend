@@ -85,7 +85,7 @@ public class RepairService {
         }
         LocalDateTime now = LocalDateTime.now(clock);
         boolean inProgress = b.getStatus() == BookingStatus.ACTIVE && b.getEndedAt() == null
-                && !now.isBefore(b.getStartTime());
+                && b.getActualStartTime() != null && !now.isBefore(b.getActualStartTime());
         if (!inProgress) {
             throw ApiException.conflict(NOT_IN_PROGRESS);
         }

@@ -26,6 +26,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import com.scooterrentalkandy.spring.support.TestNics;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -99,6 +100,9 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         b.setScooter(s);
         b.setStatus(status);
         b.setStartTime(LocalDateTime.of(2026, 10, 1, 9, 0));
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setContractSigned(true);
         b.setPickupLocation("Kandy office");
         return b;
@@ -169,8 +173,9 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         assertThat(cells(recordAt(exportToday(), 0))).containsExactlyElementsOf(ReportService.CSV_COLUMNS);
         assertThat(ReportService.CSV_COLUMNS).containsExactly("Booking Reference", "Booking ID", "Customer Name",
                 "Customer Email", "Customer NIC", "Scooter Code", "Scooter Plate", "Scooter Model", "Status",
-                "Rental Start", "Rental End", "Daily Rate (LKR)", "Extra Hour Rate (LKR)", "Charged Days",
-                "Extra Hours", "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)",
+                "Planned Pickup", "Rental Start", "Rental End", "Daily Rate (LKR)", "Extra Hour Rate (LKR)",
+                "Charged Days", "Extra Hours", "Time Charge (LKR)", "Start Odometer (km)", "End Odometer (km)",
+                "Billed Distance (km)", "Included Distance (km)",
                 "Excess Distance (km)", "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)",
                 "Rental Subtotal (LKR)", "Approved Repair Reimbursement (LKR)", "Total Amount (LKR)",
                 "Amount Paid (LKR)", "Payment Methods", "Payment Status", "Balance Due (LKR)", "Refund Due (LKR)",
@@ -198,7 +203,11 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         gearItems.saveAndFlush(tent);
 
         Booking b = booking(customer, s, BookingStatus.COMPLETED);
-        b.setEndTime(b.getStartTime().plusHours(27));
+        // Planned for 09:00, picked up and started at 10:00: billed from 10:00.
+        LocalDateTime started = b.getStartTime().plusHours(1);
+        Rentals.started(b, started, saveUser("Csv Handover Admin", Role.ADMIN), new BigDecimal("4000.0"));
+        b.setEndOdometerKm(new BigDecimal("4150.0"));
+        b.setEndTime(started.plusHours(27));
         b.setDistanceKm(new BigDecimal("150.00"));
         // 1 day + 3 extra hours = 3,250; 30 km over 120 at 15 = 450; 1 tent day = 1,500.
         b.setTotalCost(new BigDecimal("5200.00"));
@@ -214,14 +223,17 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         assertThat(value(c, "Customer NIC")).isEqualTo(customer.getNicNumber());
         assertThat(value(c, "Scooter Model")).isEqualTo("Honda Dio");
         assertThat(value(c, "Status")).isEqualTo("COMPLETED");
-        assertThat(value(c, "Rental Start")).isEqualTo("2026-10-01 09:00");
-        assertThat(value(c, "Rental End")).isEqualTo("2026-10-02 12:00");
+        assertThat(value(c, "Planned Pickup")).isEqualTo("2026-10-01 09:00");
+        assertThat(value(c, "Rental Start")).isEqualTo("2026-10-01 10:00");
+        assertThat(value(c, "Rental End")).isEqualTo("2026-10-02 13:00");
         assertThat(value(c, "Daily Rate (LKR)")).isEqualTo("2500.00");
         assertThat(value(c, "Extra Hour Rate (LKR)")).isEqualTo("250.00");
         assertThat(value(c, "Charged Days")).isEqualTo("1");
         assertThat(value(c, "Extra Hours")).isEqualTo("3");
         assertThat(value(c, "Time Charge (LKR)")).isEqualTo("3250.00");
-        assertThat(value(c, "Total Distance (km)")).isEqualTo("150.00");
+        assertThat(value(c, "Start Odometer (km)")).isEqualTo("4000.0");
+        assertThat(value(c, "End Odometer (km)")).isEqualTo("4150.0");
+        assertThat(value(c, "Billed Distance (km)")).isEqualTo("150.00");
         assertThat(value(c, "Included Distance (km)")).isEqualTo("120.00");
         assertThat(value(c, "Excess Distance (km)")).isEqualTo("30.00");
         assertThat(value(c, "Excess Rate (LKR/km)")).isEqualTo("15.00");
@@ -237,7 +249,8 @@ class BookingsCsvTests extends PostgresIntegrationTest {
         Booking b = booking(saveUser("Open Rider", Role.USER), saveScooter(), BookingStatus.PENDING);
         bookings.saveAndFlush(b);
         List<String> c = row(exportToday(), b.getReference());
-        for (String heading : List.of("Rental End", "Charged Days", "Extra Hours", "Time Charge (LKR)",
+        for (String heading : List.of("Rental Start", "Rental End", "Charged Days", "Extra Hours", "Time Charge (LKR)",
+                "Start Odometer (km)", "End Odometer (km)", "Billed Distance (km)",
                 "Included Distance (km)", "Excess Distance (km)", "Distance Charge (LKR)", "Gear Charge (LKR)",
                 "Total Amount (LKR)", "Amount Paid (LKR)", "Payment Status")) {
             assertThat(value(c, heading)).as(heading).isEmpty();

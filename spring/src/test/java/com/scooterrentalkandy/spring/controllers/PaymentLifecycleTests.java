@@ -310,7 +310,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
     // ── Provider webhook ──────────────────────────────────────────────────────
 
     @Test
-    void aSuccessfulPaymentActivatesTheBookingAndRentsTheScooter() throws Exception {
+    void aSuccessfulPaymentMakesTheBookingReadyForPickupWithoutStartingTheRental() throws Exception {
         User owner = saveUser(Role.USER);
         Scooter scooter = saveScooter();
         UUID id = signedBooking(owner, scooter, null);
@@ -319,9 +319,18 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
 
         deliver(gateway.succeeded(created, "pm_test_saved", "4242"));
 
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        // Paid, not started: no actual start, and the scooter stays AVAILABLE (held by the booking) until handover.
+        Booking b = booking(id);
+        assertThat(b.getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
+        assertThat(b.getActualStartTime()).isNull();
+        assertThat(b.getHandoverConfirmedAt()).isNull();
         assertThat(scooters.findById(scooter.getScooterId()).orElseThrow().getStatus())
-                .isEqualTo(ScooterStatus.RENTED);
+                .isEqualTo(ScooterStatus.AVAILABLE);
+        mvc.perform(as(owner, get("/api/bookings/" + id)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("READY_FOR_PICKUP"))
+                .andExpect(jsonPath("$.stage").value("READY_FOR_PICKUP"))
+                .andExpect(jsonPath("$.actualStartTime").doesNotExist());
         Payment p = payment(id);
         assertThat(p.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
         assertThat(p.getPaidAt()).isNotNull();
@@ -370,7 +379,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
 
         deliver(success);
 
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
         assertThat(payment(id).getPaidAt()).isEqualTo(paidAt);
         assertThat(notificationsFor(owner)).isEqualTo(notified);
@@ -664,7 +673,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         deliver(gateway.refunded(intentId, new BigDecimal("250.00"), new BigDecimal("100.00"), "LKR"));
 
         assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         em.flush();
         assertThat(jdbc.queryForObject("SELECT amount FROM payment_transactions WHERE kind = 'REFUND' AND intent_ref = ?",
                 BigDecimal.class, intentId)).isEqualByComparingTo("100.00");
@@ -697,7 +706,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
 
         // The current intent still pays the booking.
         deliver(gateway.succeeded(current, "pm_test_saved", "4242"));
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         assertThat(payment(id).getPaymentMethodRef()).isEqualTo("pm_test_saved");
         assertThat(gateway.refundCalls()).isEqualTo(1);
     }
@@ -761,27 +770,33 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         assertThat(transaction(payment(id), created.id()).getStatus()).isEqualTo(PaymentTransaction.Status.FAILED);
         CreatedIntent retry = intent(owner, id);
         deliver(gateway.succeeded(retry, "pm_test_saved", "4242"));
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
 
         // A cancellation event for the intent that was paid changes nothing.
         deliver(gateway.canceled(retry));
         assertThat(payment(id).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
     }
 
-    // ── Ending the rental: GPS distance and final billing ─────────────────────
+    // ── Ending the rental: odometer distance and final billing ───────────────
 
     /**
-     * A paid rental that started 2.5 hours ago (3 billable hours), with two stored GPS points 0.01° of latitude
-     * apart (1.11 km, within the 120 km included): final total 3 x 250.00 = 750.00, of which 250.00 was paid up front.
+     * A paid rental handed over by {@code admin} at an odometer of 1000.0 km and started by the customer, then moved
+     * to have started 2.5 hours ago (3 billable hours), with two stored GPS points 0.01° of latitude apart (1.11 km
+     * tracked, which is never billed): with the odometer at 1012.5 km on return (12.5 km, within the 120 km included)
+     * the final total is 3 x 250.00 = 750.00, of which 250.00 was paid up front.
      */
-    private UUID rentalUnderWay(User owner) throws Exception {
+    private UUID rentalUnderWay(User owner, User admin) throws Exception {
         Scooter scooter = saveScooter();
         UUID id = signedBooking(owner, scooter, null);
         pay(owner, id);
+        mvc.perform(json(as(admin, post("/api/admin/bookings/" + id + "/handover")), "{\"startOdometerKm\": 1000.0}"))
+                .andExpect(status().isOk());
+        mvc.perform(as(owner, post("/api/bookings/" + id + "/start"))).andExpect(status().isOk());
         Booking b = booking(id);
         LocalDateTime start = LocalDateTime.now().minusMinutes(150);
-        b.setStartTime(start);
+        b.setActualStartTime(start);
+        b.setCustomerStartConfirmedAt(start);
         for (int i = 0; i < 2; i++) {
             GpsPing ping = new GpsPing();
             ping.setScooter(scooter);
@@ -796,15 +811,24 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         return id;
     }
 
-    @Test
-    void endingARentalChargesTheSavedCardForTheGpsBasedBalance() throws Exception {
-        User owner = saveUser(Role.USER);
-        UUID id = rentalUnderWay(owner);
+    /** An admin ends the rental with the ending odometer. */
+    private ResultActions endRental(User admin, UUID id, String endOdometerKm) throws Exception {
+        return mvc.perform(json(as(admin, put("/api/bookings/" + id + "/complete")),
+                "{\"endOdometerKm\": " + endOdometerKm + "}"));
+    }
 
-        mvc.perform(as(owner, put("/api/bookings/" + id + "/complete")))
+    @Test
+    void endingARentalChargesTheSavedCardForTheOdometerBasedBalance() throws Exception {
+        User owner = saveUser(Role.USER);
+        User admin = saveUser(Role.ADMIN);
+        UUID id = rentalUnderWay(owner, admin);
+
+        endRental(admin, id, "1012.5")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.distanceKm").value(1.11))
+                .andExpect(jsonPath("$.startOdometerKm").value(1000.0))
+                .andExpect(jsonPath("$.endOdometerKm").value(1012.5))
+                .andExpect(jsonPath("$.distanceKm").value(12.5))
                 .andExpect(jsonPath("$.totalCost").value(750.00))
                 .andExpect(jsonPath("$.breakdown.chargedDays").value(0))
                 .andExpect(jsonPath("$.breakdown.extraHours").value(3))
@@ -836,10 +860,11 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
     @Test
     void aDeclinedBalanceStaysDueAndCanBePaidOnline() throws Exception {
         User owner = saveUser(Role.USER);
-        UUID id = rentalUnderWay(owner);
+        User admin = saveUser(Role.ADMIN);
+        UUID id = rentalUnderWay(owner, admin);
         gateway.declineCharges("Your card was declined.");
 
-        mvc.perform(as(owner, put("/api/bookings/" + id + "/complete")))
+        endRental(admin, id, "1012.5")
                 .andExpect(status().isPaymentRequired())
                 .andExpect(jsonPath("$.message").value("Rental ended, but the remaining balance of LKR 500.00 could "
                         + "not be charged: Your card was declined.. Pay it online to finish."));
@@ -851,7 +876,7 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
         assertThat(payment(id).getBalanceDue()).isEqualByComparingTo("500.00");
         LocalDateTime endedAt = ended.getEndedAt();
 
-        // Trying again charges the same frozen amount as a new attempt.
+        // The customer trying again (no odometer needed) charges the same frozen amount as a new attempt.
         mvc.perform(as(owner, put("/api/bookings/" + id + "/complete"))).andExpect(status().isPaymentRequired());
         assertThat(gateway.charges()).extracting(TestPaymentGateway.Charge::idempotencyKey)
                 .containsExactly("booking-" + id + "-balance-charge-1", "booking-" + id + "-balance-charge-2");
@@ -885,9 +910,10 @@ class PaymentLifecycleTests extends PostgresIntegrationTest {
     @Test
     void noOnlineBalanceIntentWhileTheSavedCardChargeIsStillProcessing() throws Exception {
         User owner = saveUser(Role.USER);
-        UUID id = rentalUnderWay(owner);
+        User admin = saveUser(Role.ADMIN);
+        UUID id = rentalUnderWay(owner, admin);
         gateway.chargesProcessing();
-        mvc.perform(as(owner, put("/api/bookings/" + id + "/complete"))).andExpect(status().isPaymentRequired());
+        endRental(admin, id, "1012.5").andExpect(status().isPaymentRequired());
 
         mvc.perform(as(owner, post("/api/bookings/" + id + "/balance-intent")))
                 .andExpect(status().isConflict());

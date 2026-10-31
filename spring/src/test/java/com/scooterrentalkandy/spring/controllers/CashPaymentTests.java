@@ -37,6 +37,7 @@ import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.services.ReportService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import com.scooterrentalkandy.spring.support.TestNics;
 import com.scooterrentalkandy.spring.support.TestPaymentGateway;
 import jakarta.persistence.EntityManager;
@@ -222,9 +223,11 @@ class CashPaymentTests extends PostgresIntegrationTest {
         return rentalUnderWay(saveScooter("2500.00", "250.00"), method, "250", 73 * 60 + 30);
     }
 
+    /** Handed over by the admin at an odometer of 1000.0 km and started by the customer {@code minutesAgo} ago. */
     private void startedMinutesAgo(UUID id, long minutesAgo) {
         Booking b = bookings.findById(id).orElseThrow();
-        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
+        Rentals.started(b, LocalDateTime.now().minusMinutes(minutesAgo), admin, Rentals.START_ODOMETER_KM);
+        b.getScooter().setStatus(ScooterStatus.RENTED);
         bookings.saveAndFlush(b);
     }
 
@@ -251,9 +254,8 @@ class CashPaymentTests extends PostgresIntegrationTest {
         t.setRecordedBy(admin);
         t.setCreatedAt(LocalDateTime.now().minusDays(1));
         transactions.save(t);
-        b.setStatus(BookingStatus.ACTIVE);
+        Rentals.started(b, LocalDateTime.now().minusMinutes(minutesAgo), admin, Rentals.START_ODOMETER_KM);
         b.getScooter().setStatus(ScooterStatus.RENTED);
-        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
         bookings.saveAndFlush(b);
         return id;
     }
@@ -273,8 +275,10 @@ class CashPaymentTests extends PostgresIntegrationTest {
                 .andExpect(status().isOk());
     }
 
+    /** Ends the rental; an admin enters the ending odometer, unchanged since the handover (no excess distance). */
     private ResultActions end(User who, UUID bookingId) throws Exception {
-        return mvc.perform(as(who, put("/api/bookings/" + bookingId + "/complete")));
+        return mvc.perform(json(as(who, put("/api/bookings/" + bookingId + "/complete")),
+                who.getRole() == Role.USER ? "{}" : "{\"endOdometerKm\": 1000.0}"));
     }
 
     private Booking booking(UUID bookingId) {
@@ -336,7 +340,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
     @Test
     void onlyAnAdminRecordsCash() throws Exception {
         UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
-        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
 
         confirm(customer, id, "balance", "7750").andExpect(status().isForbidden());
         confirm(customer, id, "refund", "7750").andExpect(status().isForbidden());
@@ -354,7 +358,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
     // ---------------------------------------------------------------- initial online payment
 
     @Test
-    void approvingTheInitialQrOrBankPaymentStartsTheRentalAndNeverCompletesIt() throws Exception {
+    void approvingTheInitialQrOrBankPaymentMakesTheBookingReadyForPickupAndNeverCompletesIt() throws Exception {
         for (PaymentMethod method : List.of(PaymentMethod.QR_TRANSFER, PaymentMethod.BANK_TRANSFER)) {
             UUID id = signedBooking();
             mvc.perform(json(as(customer, post("/api/bookings/" + id + "/transfer")),
@@ -365,8 +369,9 @@ class CashPaymentTests extends PostgresIntegrationTest {
             approve(id, "250").andExpect(status().isOk());
 
             Booking b = booking(id);
-            assertThat(b.getStatus()).isEqualTo(BookingStatus.ACTIVE);
-            assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.RENTED);
+            assertThat(b.getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
+            assertThat(b.getActualStartTime()).isNull();
+            assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
             assertThat(b.getEndedAt()).isNull();
             assertThat(b.getEndTime()).isNull();
             assertThat(b.getTotalCost()).isNull();
@@ -450,7 +455,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
     void anInitialBankTransferAndTheFinalBalanceInCashSettleTheRental() throws Exception {
         UUID id = rentalOf8000(PaymentMethod.BANK_TRANSFER);
         review(report(id, true, "2000"), "RESOLVED", "1500");
-        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(6250.00));
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(6250.00));
 
         confirm(admin, id, "balance", "6250").andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
@@ -465,7 +470,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
     @Test
     void aRepeatedCashConfirmationRecordsTheCashOnceAndCompletesOnce() throws Exception {
         UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
-        end(customer, id).andExpect(status().isOk());
+        end(admin, id).andExpect(status().isOk());
 
         confirm(admin, id, "balance", "7750").andExpect(status().isOk());
         confirm(admin, id, "balance", "7750").andExpect(status().isOk())
@@ -516,7 +521,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
     void cashIsNotDueWhenTheReceivedAmountMatchesTheFinalTotal() throws Exception {
         UUID id = rentalUnderWay(saveScooter("2500.00", "250.00"), PaymentMethod.BANK_TRANSFER, "250", 30);
 
-        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"))
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.totalCost").value(250.00));
         confirm(admin, id, "balance", "0.01").andExpect(status().isConflict());
         assertThat(recorded(id)).hasSize(1);
@@ -525,7 +530,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
     @Test
     void cashIsNotRecordedAfterTheFinalTransferWasApproved() throws Exception {
         UUID id = rentalOf8000(PaymentMethod.QR_TRANSFER);
-        end(customer, id).andExpect(status().isOk());
+        end(admin, id).andExpect(status().isOk());
         submit(id, "QR_TRANSFER").andExpect(status().isOk());
 
         // The customer may already have transferred the money: no cash while the receipt waits.
@@ -581,7 +586,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
     void anEarlierCashBookingStillSettlesItsBalanceAtTheCounter() throws Exception {
         UUID id = earlierCashRental(saveScooter("2500.00", "250.00"), "250", 73 * 60 + 30);
 
-        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(7750.00));
         assertThat(subjects(customer)).anyMatch(s -> s.startsWith("Cash balance due"));
         confirm(admin, id, "balance", "7750").andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"));
@@ -596,7 +601,7 @@ class CashPaymentTests extends PostgresIntegrationTest {
         UUID id = earlierCashRental(saveScooter("20000.00", "2500.00"), "2500", 90);
         review(report(id, true, "3000"), "RESOLVED", "3000");
 
-        end(customer, id).andExpect(status().isOk())
+        end(admin, id).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.pendingTotalCost").value(2000.00))
                 .andExpect(jsonPath("$.payment.balanceDue").doesNotExist())
@@ -625,7 +630,15 @@ class CashPaymentTests extends PostgresIntegrationTest {
     @Test
     void anEarlierCashBookingCancelledBeforeItStartedOwesTheCashBack() throws Exception {
         UUID id = earlierCashRental(saveScooter("2500.00", "250.00"), "250", 0);
+        // Paid in cash, still waiting for pickup: not handed over, not started.
         Booking b = bookings.findById(id).orElseThrow();
+        b.setStatus(BookingStatus.READY_FOR_PICKUP);
+        b.setActualStartTime(null);
+        b.setCustomerStartConfirmedAt(null);
+        b.setHandoverConfirmedAt(null);
+        b.setHandoverConfirmedBy(null);
+        b.setStartOdometerKm(null);
+        b.getScooter().setStatus(ScooterStatus.AVAILABLE);
         b.setStartTime(LocalDateTime.now().plusDays(2).truncatedTo(ChronoUnit.MINUTES));
         bookings.saveAndFlush(b);
 

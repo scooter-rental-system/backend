@@ -44,7 +44,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Approved repair reimbursement in the real final settlement (BE-043). A rental paid through the test provider runs
- * 26.5 hours with no GPS distance: 1 day + 3 extra hours = LKR 3,250 subtotal, LKR 250 paid at booking. Only the
+ * 26.5 hours with the odometer unchanged (no distance): 1 day + 3 extra hours = LKR 3,250 subtotal, LKR 250 paid at booking. Only the
  * admin-approved amount of a RESOLVED self-arranged report reduces the final bill, never below zero; the customer's
  * claimed amount never does. The balance charged (or refunded) is the adjusted total less what was paid.
  */
@@ -114,7 +114,10 @@ class RepairReimbursementTests extends PostgresIntegrationTest {
         return request.contentType(MediaType.APPLICATION_JSON).content(body);
     }
 
-    /** A rental paid through the provider (LKR 250 initial charge), 26.5 hours in, no GPS distance. */
+    /**
+     * A rental paid through the provider (LKR 250 initial charge), handed over at an odometer of 1000.0 km and
+     * started by the customer, 26.5 hours in.
+     */
     private UUID paidRentalUnderWay() throws Exception {
         String id = unique();
         Scooter s = new Scooter();
@@ -137,9 +140,14 @@ class RepairReimbursementTests extends PostgresIntegrationTest {
                         .content(gateway.deliver(gateway.succeeded(gateway.intents().getLast(), "pm_test_saved", "4242")))
                         .header("Stripe-Signature", TestPaymentGateway.SIGNATURE))
                 .andExpect(status().isOk());
+        assertThat(bookings.findById(bookingId).orElseThrow().getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
+        mvc.perform(json(as(admin, post("/api/admin/bookings/" + bookingId + "/handover")),
+                "{\"startOdometerKm\": 1000.0}")).andExpect(status().isOk());
+        mvc.perform(as(customer, post("/api/bookings/" + bookingId + "/start"))).andExpect(status().isOk());
         Booking b = bookings.findById(bookingId).orElseThrow();
         assertThat(b.getStatus()).isEqualTo(BookingStatus.ACTIVE);
-        b.setStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30));
+        b.setActualStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30));
+        b.setCustomerStartConfirmedAt(b.getActualStartTime());
         bookings.saveAndFlush(b);
         return bookingId;
     }
@@ -160,8 +168,9 @@ class RepairReimbursementTests extends PostgresIntegrationTest {
                         .formatted(status, approved)));
     }
 
+    /** An admin ends the rental; the odometer is unchanged since the handover (no distance). */
     private ResultActions end(UUID bookingId) throws Exception {
-        return mvc.perform(as(customer, put("/api/bookings/" + bookingId + "/complete")));
+        return mvc.perform(json(as(admin, put("/api/bookings/" + bookingId + "/complete")), "{\"endOdometerKm\": 1000.0}"));
     }
 
     private Payment payment(UUID bookingId) {

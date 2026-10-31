@@ -28,6 +28,7 @@ import com.scooterrentalkandy.spring.repository.GearItemRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -146,6 +147,9 @@ class GearReservationTests extends PostgresIntegrationTest {
         b.setScooter(saveScooter());
         b.setStatus(status);
         b.setStartTime(LocalDateTime.now().plusDays(1));
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setPickupLocation("Test pickup");
         b.setCreatedAt(createdAt);
         if (status == BookingStatus.CANCELLED) {

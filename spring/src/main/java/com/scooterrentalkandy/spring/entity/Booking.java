@@ -52,14 +52,45 @@ public class Booking {
 
     // ── Attributes ─────────────────────────────────────────────────────────────
 
+    /** The planned pickup time the customer chose. The rental itself runs from {@link #actualStartTime}. */
     @Column(name = "start_time", nullable = false)
     private LocalDateTime startTime;
+
+    /**
+     * When the rental really started (server time): set once, when the customer confirms the start after the admin
+     * handover, and the booking becomes ACTIVE. Billing, tracking and repairs run from it. NULL until then.
+     */
+    @Column(name = "actual_start_time")
+    private LocalDateTime actualStartTime;
+
+    /** When an admin confirmed handing the scooter over, with {@link #startOdometerKm}. */
+    @Column(name = "handover_confirmed_at")
+    private LocalDateTime handoverConfirmedAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "handover_confirmed_by")
+    private User handoverConfirmedBy;
+
+    /** When the customer confirmed the start (equal to actualStartTime). */
+    @Column(name = "customer_start_confirmed_at")
+    private LocalDateTime customerStartConfirmedAt;
+
+    /** Odometer at handover, entered by an admin. The billed distance is end minus start. */
+    @Column(name = "start_odometer_km", precision = 8, scale = 1)
+    private BigDecimal startOdometerKm;
+
+    /** Odometer at return, entered by an admin when the rental ends; fixed with the frozen settlement. */
+    @Column(name = "end_odometer_km", precision = 8, scale = 1)
+    private BigDecimal endOdometerKm;
 
     /** NULL while rental is still active. */
     @Column(name = "end_time")
     private LocalDateTime endTime;
 
-    /** Distance from the booking's GPS logs; set when the booking is COMPLETED. */
+    /**
+     * The billed distance, set when the booking is COMPLETED: the odometer difference (rentals started before odometer
+     * readings were recorded keep the GPS distance they were billed under).
+     */
     @Column(name = "distance_km", precision = 10, scale = 2)
     private BigDecimal distanceKm;
 

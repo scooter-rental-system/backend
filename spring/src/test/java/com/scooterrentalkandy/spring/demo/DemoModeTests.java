@@ -48,7 +48,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Viva demo mode as it runs locally: the {@code demo} profile and no payment provider (this context does not import
- * the test gateway). Admins can start, end and close a rental without a payment; payments themselves stay
+ * the test gateway). Admins can make a booking ready for pickup without a payment (the rental then starts through
+ * the normal handover and the customer's start), end it and close it; payments themselves stay
  * unavailable, GPS and repairs follow their normal rules, and nothing is recorded as paid. Each test rolls back.
  */
 @SpringBootTest
@@ -145,6 +146,35 @@ class DemoModeTests {
         return mvc.perform(as(user, post("/api/admin/demo/bookings/" + bookingId + "/" + action)));
     }
 
+    /**
+     * Demo activation (no payment), then the normal handover at an odometer of 1000.0 km and the customer's start;
+     * with {@code dayAgo}, the rental is then moved to have started 26.5 hours ago.
+     */
+    private void startDemoRental(User admin, User customer, UUID bookingId, boolean dayAgo) throws Exception {
+        demo(admin, "activate", bookingId).andExpect(status().isOk());
+        handOverAndStart(admin, customer, bookingId, dayAgo);
+    }
+
+    /** The normal handover at an odometer of 1000.0 km and the customer's start, on a booking ready for pickup. */
+    private void handOverAndStart(User admin, User customer, UUID bookingId, boolean dayAgo) throws Exception {
+        mvc.perform(as(admin, post("/api/admin/bookings/" + bookingId + "/handover"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"startOdometerKm\": 1000.0}"))
+                .andExpect(status().isOk());
+        mvc.perform(as(customer, post("/api/bookings/" + bookingId + "/start"))).andExpect(status().isOk());
+        if (dayAgo) {
+            Booking b = reload(bookingId);
+            b.setActualStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30));
+            b.setCustomerStartConfirmedAt(b.getActualStartTime());
+            bookings.saveAndFlush(b);
+        }
+    }
+
+    /** Ends the demo rental with the ending odometer. */
+    private ResultActions demoEnd(User admin, UUID bookingId, String endOdometerKm) throws Exception {
+        return mvc.perform(as(admin, post("/api/admin/demo/bookings/" + bookingId + "/end"))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"endOdometerKm\": " + endOdometerKm + "}"));
+    }
+
     private ResultActions location(User rider, UUID bookingId, String lat, String lng) throws Exception {
         return mvc.perform(as(rider, post("/api/bookings/" + bookingId + "/location"))
                 .contentType(MediaType.APPLICATION_JSON)
@@ -178,17 +208,26 @@ class DemoModeTests {
     }
 
     @Test
-    void anAdminActivatesASignedPendingBookingWithoutAnyPayment() throws Exception {
+    void anAdminMakesASignedPendingBookingReadyForPickupWithoutAnyPayment() throws Exception {
         User customer = saveUser(Role.USER);
+        User admin = saveUser(Role.ADMIN);
         UUID id = booking(customer, true);
 
-        demo(saveUser(Role.ADMIN), "activate", id).andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ACTIVE"))
-                .andExpect(jsonPath("$.stage").value("IN_PROGRESS"))
+        // Only the payment is skipped: the booking waits for the handover and the customer's start like any other.
+        demo(admin, "activate", id).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("READY_FOR_PICKUP"))
+                .andExpect(jsonPath("$.stage").value("READY_FOR_PICKUP"))
+                .andExpect(jsonPath("$.actualStartTime").doesNotExist())
                 .andExpect(jsonPath("$.payment").doesNotExist());
+        assertThat(reload(id).getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
 
+        handOverAndStart(admin, customer, id, false);
+        mvc.perform(as(customer, get("/api/bookings/" + id))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.stage").value("IN_PROGRESS"));
         Booking b = reload(id);
-        assertThat(b.getStartTime()).as("starts at the activation").isBeforeOrEqualTo(LocalDateTime.now());
+        assertThat(b.getActualStartTime()).as("starts at the customer's confirmation")
+                .isBeforeOrEqualTo(LocalDateTime.now());
         assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.RENTED);
         assertThat(payments.findByBooking_BookingId(id)).as("no payment record of any kind").isEmpty();
         assertThat(pings.findByBooking_BookingIdOrderByRecordedAtAsc(id)).as("no GPS points generated").isEmpty();
@@ -234,6 +273,7 @@ class DemoModeTests {
         Booking b = reload(id);
         b.setStatus(BookingStatus.COMPLETED);
         b.setStartTime(LocalDateTime.now().minusHours(5));
+        b.setActualStartTime(b.getStartTime());
         b.setEndTime(LocalDateTime.now().minusHours(2));
         b.setDistanceKm(new BigDecimal("10.00"));
         b.setTotalCost(new BigDecimal("750.00"));
@@ -281,6 +321,8 @@ class DemoModeTests {
         location(customer, id, "7.2906", "80.6337").andExpect(status().isConflict());
 
         demo(admin, "activate", id).andExpect(status().isOk());
+        location(customer, id, "7.2906", "80.6337").andExpect(status().isConflict()); // ready, not started
+        handOverAndStart(admin, customer, id, false);
         location(saveUser(Role.USER), id, "7.2906", "80.6337").andExpect(status().isNotFound());
         location(customer, id, "7.2906", "80.6337").andExpect(status().isAccepted());
 
@@ -292,7 +334,7 @@ class DemoModeTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.points.length()").value(1));
 
-        demo(admin, "end", id).andExpect(status().isOk());
+        demoEnd(admin, id, "1000.0").andExpect(status().isOk());
         location(customer, id, "7.2910", "80.6340").andExpect(status().isConflict());
         assertThat(pings.findByBooking_BookingIdOrderByRecordedAtAsc(id)).hasSize(1);
     }
@@ -301,7 +343,7 @@ class DemoModeTests {
     void theRiderReportsARepairOnTheDemoRental() throws Exception {
         User customer = saveUser(Role.USER);
         UUID id = booking(customer, true);
-        demo(saveUser(Role.ADMIN), "activate", id).andExpect(status().isOk());
+        startDemoRental(saveUser(Role.ADMIN), customer, id, false);
 
         mvc.perform(as(customer, post("/api/bookings/" + id + "/repairs")).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"description\": \"Brake feels soft\", \"selfArranged\": false}"))
@@ -312,14 +354,15 @@ class DemoModeTests {
     @Test
     void endingCalculatesTheRealFinalBillAndChargesNothing() throws Exception {
         User admin = saveUser(Role.ADMIN);
-        UUID id = booking(saveUser(Role.USER), true);
-        demo(admin, "activate", id).andExpect(status().isOk());
-        // 26.5 hours into the rental: 1 day + 3 started extra hours, no GPS distance.
-        Booking b = reload(id);
-        b.setStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30));
-        bookings.saveAndFlush(b);
+        User customer = saveUser(Role.USER);
+        UUID id = booking(customer, true);
+        startDemoRental(admin, customer, id, true);
+        // The ending odometer is required, as for any rental.
+        demo(admin, "end", id).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Enter the ending odometer reading"));
 
-        demo(admin, "end", id).andExpect(status().isOk())
+        // 26.5 hours into the rental: 1 day + 3 started extra hours, odometer unchanged (no distance).
+        demoEnd(admin, id, "1000.0").andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.stage").value("BALANCE_DUE"))
                 .andExpect(jsonPath("$.pendingTotalCost").value(3250.00))
@@ -330,21 +373,22 @@ class DemoModeTests {
 
         Booking ended = reload(id);
         BigDecimal expected = pricing.finalBill(ended.getScooter(), PricingService.selectionsOf(ended),
-                ended.getStartTime(), ended.getEndedAt(), ended.getPendingDistanceKm()).total();
+                ended.getActualStartTime(), ended.getEndedAt(), ended.getPendingDistanceKm()).total();
         assertThat(ended.getPendingTotalCost()).isEqualByComparingTo(expected);
         Invoice inv = invoices.findFirstByBooking_BookingIdAndKind(id, Invoice.Kind.FINAL).orElseThrow();
         assertThat(inv.getTotal()).isEqualByComparingTo("3250.00");
         assertThat(inv.getStatus()).as("no paid status").isNull();
         assertThat(payments.findByBooking_BookingId(id)).isEmpty();
-        demo(admin, "end", id).andExpect(status().isConflict());
+        demoEnd(admin, id, "1000.0").andExpect(status().isConflict());
     }
 
     @Test
     void closingReleasesTheScooterAndVoidsTheUnpaidInvoice() throws Exception {
         User admin = saveUser(Role.ADMIN);
-        UUID id = booking(saveUser(Role.USER), true);
-        demo(admin, "activate", id).andExpect(status().isOk());
-        demo(admin, "end", id).andExpect(status().isOk());
+        User customer = saveUser(Role.USER);
+        UUID id = booking(customer, true);
+        startDemoRental(admin, customer, id, false);
+        demoEnd(admin, id, "1000.0").andExpect(status().isOk());
 
         demo(admin, "close", id).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CANCELLED"))
@@ -363,10 +407,7 @@ class DemoModeTests {
         User customer = saveUser(Role.USER);
         User admin = saveUser(Role.ADMIN);
         UUID id = booking(customer, true);
-        demo(admin, "activate", id).andExpect(status().isOk());
-        Booking b = reload(id);
-        b.setStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30));
-        bookings.saveAndFlush(b);
+        startDemoRental(admin, customer, id, true);
         String repair = mvc.perform(as(customer, post("/api/bookings/" + id + "/repairs"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"description\": \"Chain snapped\", \"selfArranged\": true, \"claimedAmount\": 2000}"))
@@ -377,14 +418,14 @@ class DemoModeTests {
                 .andExpect(status().isOk());
 
         // 1 day + 3 extra hours = 3,250, less the approved 1,500 (not the claimed 2,000).
-        demo(admin, "end", id).andExpect(status().isOk())
+        demoEnd(admin, id, "1000.0").andExpect(status().isOk())
                 .andExpect(jsonPath("$.stage").value("BALANCE_DUE"))
                 .andExpect(jsonPath("$.pendingTotalCost").value(1750.00))
                 .andExpect(jsonPath("$.payment").doesNotExist());
 
         Booking ended = reload(id);
         assertThat(ended.getPendingTotalCost()).isEqualByComparingTo(pricing.finalBill(ended.getScooter(),
-                PricingService.selectionsOf(ended), ended.getStartTime(), ended.getEndedAt(),
+                PricingService.selectionsOf(ended), ended.getActualStartTime(), ended.getEndedAt(),
                 ended.getPendingDistanceKm(), new BigDecimal("1500")).total());
         Invoice inv = invoices.findFirstByBooking_BookingIdAndKind(id, Invoice.Kind.FINAL).orElseThrow();
         assertThat(inv.getSubtotal()).isEqualByComparingTo("3250.00");
