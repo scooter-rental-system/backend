@@ -12,7 +12,7 @@ public final class PaymentEvents {
     private PaymentEvents() {
     }
 
-    /** The initial charge succeeded: the booking can become ACTIVE. */
+    /** The initial charge succeeded: the booking is ready for pickup (READY_FOR_PICKUP). */
     public record InitialPaymentSucceeded(UUID bookingId) {
     }
 

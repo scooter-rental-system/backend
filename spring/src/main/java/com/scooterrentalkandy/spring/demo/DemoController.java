@@ -2,6 +2,7 @@ package com.scooterrentalkandy.spring.demo;
 
 import java.util.UUID;
 import com.scooterrentalkandy.spring.dto.BookingDtos.BookingResponse;
+import com.scooterrentalkandy.spring.dto.BookingDtos.CompleteRentalRequest;
 import com.scooterrentalkandy.spring.security.AuthUser;
 import com.scooterrentalkandy.spring.security.CurrentUser;
 import org.springframework.context.annotation.Profile;
@@ -9,6 +10,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -42,8 +44,9 @@ public class DemoController {
 
     @PostMapping("/api/admin/demo/bookings/{id}/end")
     @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
-    public BookingResponse end(@PathVariable UUID id, @CurrentUser AuthUser admin) {
-        return demo.end(id, admin);
+    public BookingResponse end(@PathVariable UUID id, @CurrentUser AuthUser admin,
+                               @RequestBody(required = false) CompleteRentalRequest req) {
+        return demo.end(id, admin, req == null ? null : req.endOdometerKm());
     }
 
     @PostMapping("/api/admin/demo/bookings/{id}/close")

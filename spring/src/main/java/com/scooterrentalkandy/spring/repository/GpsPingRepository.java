@@ -24,6 +24,9 @@ public interface GpsPingRepository extends JpaRepository<GpsPing, UUID> {
 
     Optional<GpsPing> findFirstByBooking_BookingIdOrderByRecordedAtDesc(UUID bookingId);
 
+    /** The booking's latest reports, newest first (for the sustained over-limit check on rider reports). */
+    List<GpsPing> findTop4ByBooking_BookingIdOrderByRecordedAtDesc(UUID bookingId);
+
     boolean existsByBooking_BookingId(UUID bookingId);
 
     /**

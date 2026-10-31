@@ -113,7 +113,7 @@ public class ReportService {
         Map<UUID, Long> rentedMinutes = new HashMap<>();
         Map<UUID, Long> rentalsByScooter = new HashMap<>();
         for (Booking b : bookings.findRentalsOverlapping(RENTALS, fromTs, toTs)) {
-            LocalDateTime s = b.getStartTime().isBefore(fromTs) ? fromTs : b.getStartTime();
+            LocalDateTime s = b.getActualStartTime().isBefore(fromTs) ? fromTs : b.getActualStartTime();
             LocalDateTime end = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt() != null ? b.getEndedAt() : now;
             LocalDateTime e = end.isAfter(toTs) ? toTs : end;
             long minutes = Math.max(0, Duration.between(s, e).toMinutes());
@@ -161,8 +161,12 @@ public class ReportService {
         }
         List<Booking> active = bookings.findByStatusOrderByStartTimeAsc(BookingStatus.ACTIVE);
         long balanceDue = active.stream().filter(b -> b.getEndedAt() != null).count();
-        long upcoming = active.stream().filter(b -> b.getEndedAt() == null && now.isBefore(b.getStartTime())).count();
-        long underWay = active.size() - balanceDue - upcoming;
+        // Started before the pickup step existed, with the start still ahead (legacy UPCOMING).
+        long notStarted = active.stream().filter(b -> b.getEndedAt() == null
+                && now.isBefore(b.getActualStartTime())).count();
+        long underWay = active.size() - balanceDue - notStarted;
+        // Paid and waiting for the handover and the customer's start confirmation.
+        long upcoming = bookings.countByStatus(BookingStatus.READY_FOR_PICKUP) + notStarted;
 
         LocalDate today = now.toLocalDate();
         BigDecimal revenue30 = sum(payments.findByStatusInAndPaidAtBetween(List.of(PaymentStatus.SUCCESS),
@@ -177,8 +181,9 @@ public class ReportService {
     /** The bookings CSV headings, in order (human-readable, with units, for spreadsheets). */
     static final List<String> CSV_COLUMNS = List.of("Booking Reference", "Booking ID", "Customer Name",
             "Customer Email", "Customer NIC", "Scooter Code", "Scooter Plate", "Scooter Model", "Status",
-            "Rental Start", "Rental End", "Daily Rate (LKR)", "Extra Hour Rate (LKR)", "Charged Days", "Extra Hours",
-            "Time Charge (LKR)", "Total Distance (km)", "Included Distance (km)", "Excess Distance (km)",
+            "Planned Pickup", "Rental Start", "Rental End", "Daily Rate (LKR)", "Extra Hour Rate (LKR)", "Charged Days",
+            "Extra Hours", "Time Charge (LKR)", "Start Odometer (km)", "End Odometer (km)", "Billed Distance (km)",
+            "Included Distance (km)", "Excess Distance (km)",
             "Excess Rate (LKR/km)", "Distance Charge (LKR)", "Gear", "Gear Charge (LKR)", "Rental Subtotal (LKR)",
             "Approved Repair Reimbursement (LKR)", "Total Amount (LKR)",
             "Amount Paid (LKR)", "Payment Methods", "Payment Status", "Balance Due (LKR)", "Refund Due (LKR)",
@@ -192,9 +197,11 @@ public class ReportService {
     private static final String CSV_EOL = "\r\n";
 
     /**
-     * All bookings created in the window as CSV (for spreadsheets/accounting), one row per booking. The charge
-     * breakdown (days, extra hours, distance allowance, time/distance/gear charges) is filled only for rentals that
-     * have ended, from the shared PricingService with the scooter's and gear's rates (rates are not stored on bookings,
+     * All bookings created in the window as CSV (for spreadsheets/accounting), one row per booking. Planned Pickup is
+     * the time the customer chose; Rental Start is the actual start (empty until the rental starts). The billed
+     * distance is the odometer difference (the GPS distance for rentals started before odometer readings were
+     * recorded). The charge breakdown (days, extra hours, distance allowance, time/distance/gear charges) is filled
+     * only for rentals that have ended, from the shared PricingService with the scooter's and gear's rates (rates are not stored on bookings,
      * SDS 2.4); the rental subtotal and the approved repair reimbursement come from the final invoice (0 when none was
      * approved), and the total is the billed amount after that reimbursement; total, paid and balance due are the
      * billed amounts. Payment Methods lists every way money was received, in order (e.g. "QR_TRANSFER + CASH" when
@@ -213,8 +220,9 @@ public class ReportService {
             LocalDateTime ended = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
             BigDecimal km = b.getDistanceKm() != null ? b.getDistanceKm() : b.getPendingDistanceKm();
             BigDecimal total = b.getTotalCost() != null ? b.getTotalCost() : b.getPendingTotalCost();
-            PricingService.FinalBill bill = ended == null || km == null ? null
-                    : pricing.finalBill(s, PricingService.selectionsOf(b), b.getStartTime(), ended, km);
+            LocalDateTime started = b.getActualStartTime();
+            PricingService.FinalBill bill = ended == null || km == null || started == null ? null
+                    : pricing.finalBill(s, PricingService.selectionsOf(b), started, ended, km);
             // The final invoice is the record of what was billed: subtotal, less the reimbursement, gives the total.
             Invoice finalInvoice = bill == null ? null
                     : invoices.findFirstByBooking_BookingIdAndKind(b.getBookingId(), Invoice.Kind.FINAL).orElse(null);
@@ -230,11 +238,13 @@ public class ReportService {
                             csv(b.getUser().getFullName()), csv(b.getUser().getEmail()),
                             csv(b.getUser().getNicNumber()), csv(s.getCode()), csv(s.getPlateNumber()),
                             csv(s.getModel()), b.getStatus().name(), b.getStartTime().format(CSV_TIME),
+                            started == null ? "" : started.format(CSV_TIME),
                             ended == null ? "" : ended.format(CSV_TIME), plain(s.getDailyRate()),
                             plain(s.getHourlyRate()),
                             bill == null ? "" : String.valueOf(bill.days()),
                             bill == null ? "" : String.valueOf(bill.extraHours()),
-                            bill == null ? "" : plain(bill.timeCost()), plain(km == null ? null : km.setScale(2)),
+                            bill == null ? "" : plain(bill.timeCost()), plain(b.getStartOdometerKm()),
+                            plain(b.getEndOdometerKm()), plain(km == null ? null : km.setScale(2)),
                             bill == null ? "" : plain(bill.includedKm()), bill == null ? "" : plain(bill.excessKm()),
                             plain(s.getPerKmRate()), bill == null ? "" : plain(bill.distanceCost()), csv(gear),
                             bill == null ? "" : plain(bill.gearCost()), plain(subtotal), plain(reimbursement),

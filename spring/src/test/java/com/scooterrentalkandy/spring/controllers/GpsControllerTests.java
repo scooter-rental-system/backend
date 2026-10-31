@@ -31,6 +31,7 @@ import com.scooterrentalkandy.spring.repository.SpeedViolationRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -112,6 +113,9 @@ class GpsControllerTests extends PostgresIntegrationTest {
         b.setScooter(scooter);
         b.setStatus(status);
         b.setStartTime(start);
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setPickupLocation("Test pickup");
         if (status == BookingStatus.COMPLETED) {
             b.setEndTime(start.plusHours(1));
@@ -302,7 +306,8 @@ class GpsControllerTests extends PostgresIntegrationTest {
 
         for (Booking notUnderWay : new Booking[] {
                 booking(rider, saveScooter(), BookingStatus.PENDING, now.minusHours(1)),
-                booking(rider, saveScooter(), BookingStatus.ACTIVE, now.plusHours(3)),
+                // Paid and past its planned pickup time, but not handed over and started: not under way.
+                booking(rider, saveScooter(), BookingStatus.READY_FOR_PICKUP, now.minusHours(1)),
                 booking(rider, saveScooter(), BookingStatus.COMPLETED, now.minusHours(4)),
                 booking(rider, saveScooter(), BookingStatus.CANCELLED, now.minusHours(1))}) {
             mvc.perform(json(as(rider, post("/api/bookings/" + notUnderWay.getBookingId() + "/location")), body))
@@ -435,6 +440,93 @@ class GpsControllerTests extends PostgresIntegrationTest {
                 .satisfies(n -> assertThat(n.getSubject()).isEqualTo("Speed violation: " + scooter.getCode()));
         assertThat(notifications.findByUser_UserIdAndChannelOrderByCreatedAtDesc(admin.getUserId(),
                 Notification.Channel.SMS)).isEmpty();
+    }
+
+    // ── Phone (rider) GPS speed: approximate, never alerted on one sample ─────
+
+    private GpsPing storedPing(Booking b, String speedKmh, LocalDateTime at) {
+        GpsPing p = storedPing(b, "7.290000", "80.630000", at);
+        p.setSpeedKmh(new BigDecimal(speedKmh));
+        return pings.saveAndFlush(p);
+    }
+
+    private long speedAlerts(User admin) {
+        return notifications.findByUser_UserIdAndChannelOrderByCreatedAtDesc(admin.getUserId(),
+                Notification.Channel.IN_APP).stream().filter(n -> n.getSubject().startsWith("Speed violation")).count();
+    }
+
+    @Test
+    void oneSpikeFromThePhoneRaisesNoSpeedAlert() throws Exception {
+        User admin = saveUser(Role.ADMIN);
+        User rider = saveUser(Role.USER);
+        Booking rental = booking(rider, saveScooter(), BookingStatus.ACTIVE, now.minusHours(1));
+        storedPing(rental, "12.00", LocalDateTime.now().minusMinutes(1));
+
+        // The browser reported 126 km/h once: kept as approximate monitoring data, but no alert.
+        mvc.perform(json(as(rider, post("/api/bookings/" + rental.getBookingId() + "/location")),
+                        location("7.290100", "80.630000", "\"speedKmh\": 126")))
+                .andExpect(status().isAccepted());
+
+        assertThat(logOf(rental).getLast().getSpeedKmh()).isEqualByComparingTo("126.00");
+        assertThat(violations.findByScooter_ScooterIdOrderByRecordedAtAsc(rental.getScooter().getScooterId())).isEmpty();
+        assertThat(speedAlerts(admin)).isZero();
+    }
+
+    @Test
+    void aSustainedRunOfCredibleOverLimitPhoneReadingsAlertsOnce() throws Exception {
+        User admin = saveUser(Role.ADMIN);
+        User rider = saveUser(Role.USER);
+        Booking rental = booking(rider, saveScooter(), BookingStatus.ACTIVE, now.minusHours(1));
+        storedPing(rental, "80.00", LocalDateTime.now().minusMinutes(2));
+        storedPing(rental, "85.00", LocalDateTime.now().minusMinutes(1));
+
+        mvc.perform(json(as(rider, post("/api/bookings/" + rental.getBookingId() + "/location")),
+                        location("7.290100", "80.630000", "\"speedKmh\": 90")))
+                .andExpect(status().isAccepted());
+
+        assertThat(violations.findByScooter_ScooterIdOrderByRecordedAtAsc(rental.getScooter().getScooterId()))
+                .singleElement().satisfies(v -> assertThat(v.getSpeedKmh()).isEqualByComparingTo("90.00"));
+        assertThat(speedAlerts(admin)).isEqualTo(1);
+    }
+
+    @Test
+    void aRunAlreadyAlertedOrBrokenByAnImplausibleReadingRaisesNoFurtherAlert() throws Exception {
+        User admin = saveUser(Role.ADMIN);
+        User rider = saveUser(Role.USER);
+        // Already over the limit for three readings before this one: the run was alerted when it began.
+        Booking running = booking(rider, saveScooter(), BookingStatus.ACTIVE, now.minusHours(1));
+        storedPing(running, "70.00", LocalDateTime.now().minusMinutes(3));
+        storedPing(running, "80.00", LocalDateTime.now().minusMinutes(2));
+        storedPing(running, "85.00", LocalDateTime.now().minusMinutes(1));
+        mvc.perform(json(as(rider, post("/api/bookings/" + running.getBookingId() + "/location")),
+                        location("7.290100", "80.630000", "\"speedKmh\": 90")))
+                .andExpect(status().isAccepted());
+        // An implausible reading (a GPS jump) in the run: not three credible readings.
+        Booking jumpy = booking(saveUser(Role.USER), saveScooter(), BookingStatus.ACTIVE, now.minusHours(1));
+        storedPing(jumpy, "80.00", LocalDateTime.now().minusMinutes(2));
+        storedPing(jumpy, "400.00", LocalDateTime.now().minusMinutes(1));
+        mvc.perform(json(as(jumpy.getUser(), post("/api/bookings/" + jumpy.getBookingId() + "/location")),
+                        location("7.290100", "80.630000", "\"speedKmh\": 90")))
+                .andExpect(status().isAccepted());
+
+        assertThat(violations.findByScooter_ScooterIdOrderByRecordedAtAsc(running.getScooter().getScooterId())).isEmpty();
+        assertThat(violations.findByScooter_ScooterIdOrderByRecordedAtAsc(jumpy.getScooter().getScooterId())).isEmpty();
+        assertThat(speedAlerts(admin)).isZero();
+    }
+
+    @Test
+    void anImplausibleBrowserSpeedIsIgnoredInFavourOfTheSpeedFromThePositions() throws Exception {
+        User rider = saveUser(Role.USER);
+        Booking rental = booking(rider, saveScooter(), BookingStatus.ACTIVE, now.minusHours(1));
+        // A previous report a minute ago, 0.01 degrees of latitude (about 1.11 km) away: about 66.7 km/h.
+        storedPing(rental, "7.280000", "80.630000", LocalDateTime.now().minusSeconds(60));
+
+        mvc.perform(json(as(rider, post("/api/bookings/" + rental.getBookingId() + "/location")),
+                        location("7.290000", "80.630000", "\"speedKmh\": 400")))
+                .andExpect(status().isAccepted());
+
+        assertThat(logOf(rental)).hasSize(2).last()
+                .satisfies(p -> assertThat(p.getSpeedKmh().doubleValue()).isCloseTo(66.7, within(1.5)));
     }
 
     @Test

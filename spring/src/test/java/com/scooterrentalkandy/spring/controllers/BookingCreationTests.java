@@ -313,6 +313,7 @@ class BookingCreationTests extends PostgresIntegrationTest {
         active.setScooter(scooter);
         active.setStatus(BookingStatus.ACTIVE);
         active.setStartTime(LocalDateTime.now().minusHours(1));
+        active.setActualStartTime(active.getStartTime());
         active.setPickupLocation("Test pickup");
         bookings.saveAndFlush(active);
 

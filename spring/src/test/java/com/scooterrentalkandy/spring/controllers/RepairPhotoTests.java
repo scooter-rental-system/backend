@@ -111,6 +111,7 @@ class RepairPhotoTests extends PostgresIntegrationTest {
         b.setScooter(s);
         b.setStatus(BookingStatus.ACTIVE);
         b.setStartTime(LocalDateTime.now().minusHours(2));
+        b.setActualStartTime(b.getStartTime());
         b.setContractSigned(true);
         b.setPickupLocation("Kandy office");
         return bookings.saveAndFlush(b);

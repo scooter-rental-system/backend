@@ -167,12 +167,18 @@ class CashWithoutCardProviderTests {
         mvc.perform(as(admin, post("/api/admin/payment-receipts/" + receiptId + "/approve"))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"amount\": 250}"))
                 .andExpect(status().isOk());
-        assertThat(bookings.findById(id).orElseThrow().getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(bookings.findById(id).orElseThrow().getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
+        mvc.perform(as(admin, post("/api/admin/bookings/" + id + "/handover")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"startOdometerKm\": 5000.0}")).andExpect(status().isOk());
+        mvc.perform(as(customer, post("/api/bookings/" + id + "/start"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
 
         Booking b = bookings.findById(id).orElseThrow();
-        b.setStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30)); // 1 day + 3 hours = 3,250
+        b.setActualStartTime(LocalDateTime.now().minusHours(26).minusMinutes(30)); // 1 day + 3 hours = 3,250
+        b.setCustomerStartConfirmedAt(b.getActualStartTime());
         bookings.saveAndFlush(b);
-        mvc.perform(as(customer, put("/api/bookings/" + id + "/complete"))).andExpect(status().isOk())
+        mvc.perform(as(admin, put("/api/bookings/" + id + "/complete")).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"endOdometerKm\": 5100.0}")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.stage").value("BALANCE_DUE"))
                 .andExpect(jsonPath("$.payment.balanceDue").value(3000.00));
         mvc.perform(as(admin, post("/api/admin/bookings/" + id + "/cash/balance"))

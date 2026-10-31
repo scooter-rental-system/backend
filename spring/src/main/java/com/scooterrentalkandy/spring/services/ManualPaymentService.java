@@ -47,7 +47,7 @@ import org.springframework.web.multipart.MultipartFile;
  * <p>Initial payment: the customer chooses QR or bank transfer (the payment stays PENDING, the booking awaiting
  * payment), transfers the initial charge and uploads the receipt. While it waits for verification the booking stays
  * reserved beyond the usual payment hold, up to the verification hold (see {@link UnpaidBookingExpiry}). Approval
- * publishes {@link InitialPaymentSucceeded}, so the booking becomes ACTIVE through the same lifecycle as card and
+ * publishes {@link InitialPaymentSucceeded}, so the booking becomes READY_FOR_PICKUP through the same lifecycle as card and
  * cash. A rejected receipt stays on record with its reason; the customer may upload a replacement (a new receipt).
  *
  * <p>Final balance: when a rental paid at the counter or by transfer ends with a balance due, the customer may
@@ -282,7 +282,7 @@ public class ManualPaymentService {
 
     /**
      * An admin checked the business account and the money arrived: the receipt is approved and the amount recorded
-     * as received. Initial payment: the booking becomes ACTIVE through the normal lifecycle. Final balance: the
+     * as received. Initial payment: the booking becomes READY_FOR_PICKUP through the normal lifecycle. Final balance: the
      * rental completes. Only a receipt waiting for verification can be approved; approving it again changes nothing.
      */
     @Transactional

@@ -198,11 +198,11 @@ class NotificationEmailDeliveryTests extends PostgresIntegrationTest {
 
         transaction.executeWithoutResult(tx -> {
             Booking locked = bookings.findById(bookingId).orElseThrow();
-            locked.setStatus(BookingStatus.ACTIVE);
+            locked.setStatus(BookingStatus.READY_FOR_PICKUP);
             notifications.notify(user, "Booking confirmed: " + locked.getReference(), "Your scooter is ready.");
         });
 
-        assertThat(bookings.findById(bookingId).orElseThrow().getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(bookings.findById(bookingId).orElseThrow().getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         assertThat(rowsOf(user, Channel.IN_APP)).hasSize(1);
         assertThat(rowsOf(user, Channel.EMAIL)).singleElement()
                 .satisfies(n -> assertThat(n.getStatus()).isEqualTo(Notification.Status.FAILED));

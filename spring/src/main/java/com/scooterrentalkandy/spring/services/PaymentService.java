@@ -47,7 +47,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * One Payment per booking, following the Stripe PaymentIntent flow (SDS 4.2, 4.3): the initial charge (1 hour +
- * 1 gear day) is an intent the customer confirms in the browser; the provider's webhook activates the booking.
+ * 1 gear day) is an intent the customer confirms in the browser; the provider's webhook confirms the booking
+ * (READY_FOR_PICKUP).
  * When the rental ends, the remaining balance is charged to the saved payment method and added to the same row.
  * If that fails, the balance stays due on the row and can be paid online.
  *
