@@ -8,12 +8,10 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
-import com.scooterrentalkandy.spring.entity.Payment;
 
 public final class BookingDtos {
 

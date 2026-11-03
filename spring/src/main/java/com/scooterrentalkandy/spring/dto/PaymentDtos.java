@@ -1,7 +1,6 @@
 package com.scooterrentalkandy.spring.dto;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -12,8 +11,6 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
-import com.scooterrentalkandy.spring.entity.Payment;
-import com.scooterrentalkandy.spring.entity.PaymentTransaction;
 
 /** No request type in this API carries card data: cards are confirmed with the payment provider, not with us. */
 public final class PaymentDtos {

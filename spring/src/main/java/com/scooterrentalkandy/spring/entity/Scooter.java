@@ -6,9 +6,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.List;
 import java.util.UUID;
 
 @Entity
@@ -39,6 +37,7 @@ public class Scooter {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
+    @Builder.Default
     private ScooterStatus status = ScooterStatus.AVAILABLE;
 
     /** Charge for each complete 24 hours, and for a remainder of more than 8 hours (LKR; decision E2, V16). */
@@ -55,6 +54,7 @@ public class Scooter {
 
     /** SDS 2.2: cumulative kilometres travelled. */
     @Column(name = "total_mileage", nullable = false, precision = 10, scale = 2)
+    @Builder.Default
     private BigDecimal totalMileage = BigDecimal.ZERO.setScale(2);
 
     private Double latitude;

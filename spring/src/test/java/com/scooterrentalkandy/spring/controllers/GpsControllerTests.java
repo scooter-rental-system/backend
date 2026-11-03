@@ -355,15 +355,15 @@ class GpsControllerTests extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
-        assertThat((List<Boolean>) JsonPath.read(body, "$[?(@.scooterId == '" + fresh.getScooterId() + "')].stale"))
+        assertThat(JsonPath.<List<Boolean>>read(body, "$[?(@.scooterId == '" + fresh.getScooterId() + "')].stale"))
                 .containsExactly(false);
-        assertThat((List<Boolean>) JsonPath.read(body, "$[?(@.scooterId == '" + old.getScooterId() + "')].stale"))
+        assertThat(JsonPath.<List<Boolean>>read(body, "$[?(@.scooterId == '" + old.getScooterId() + "')].stale"))
                 .containsExactly(true);
-        assertThat((List<Double>) JsonPath.read(body, "$[?(@.scooterId == '" + old.getScooterId() + "')].latitude"))
+        assertThat(JsonPath.<List<Double>>read(body, "$[?(@.scooterId == '" + old.getScooterId() + "')].latitude"))
                 .containsExactly(7.30);
-        assertThat((List<Boolean>) JsonPath.read(body, "$[?(@.scooterId == '" + never.getScooterId() + "')].stale"))
+        assertThat(JsonPath.<List<Boolean>>read(body, "$[?(@.scooterId == '" + never.getScooterId() + "')].stale"))
                 .containsExactly(true);
-        assertThat((List<Object>) JsonPath.read(body, "$[?(@.scooterId == '" + never.getScooterId() + "')].latitude"))
+        assertThat(JsonPath.<List<Object>>read(body, "$[?(@.scooterId == '" + never.getScooterId() + "')].latitude"))
                 .containsExactly((Object) null);
     }
 

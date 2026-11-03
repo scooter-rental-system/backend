@@ -32,7 +32,6 @@ import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
 import com.scooterrentalkandy.spring.entity.enums.Role;
 import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
 import com.scooterrentalkandy.spring.exception.ApiException;
-import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.MaintenanceRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
@@ -61,9 +60,6 @@ class MaintenanceConcurrencyTests extends PostgresIntegrationTest {
 
     @Autowired
     private MaintenanceService maintenanceService;
-
-    @Autowired
-    private BookingRepository bookings;
 
     @Autowired
     private MaintenanceRepository records;
