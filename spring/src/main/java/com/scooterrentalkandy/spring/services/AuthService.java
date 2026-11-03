@@ -108,16 +108,33 @@ public class AuthService {
         return UserResponse.from(find(userId));
     }
 
-    /** Updates only the fields in {@link UpdateProfileRequest}; email, NIC, role, password and status are kept. */
+    /** Updates profile fields; an account missing its required NIC can complete it once, but cannot replace it. */
     @Transactional
     public UserResponse updateProfile(UUID userId, UpdateProfileRequest req) {
         User user = find(userId);
+        if (user.getNicNumber() == null || user.getNicNumber().isBlank()) {
+            if (req.nicNumber() == null || req.nicNumber().isBlank()) {
+                throw ApiException.badRequest("Add your valid NIC number before saving profile changes");
+            }
+            String nic = req.nicNumber().trim().toUpperCase(Locale.ROOT);
+            if (users.existsByNicNumber(nic)) {
+                throw ApiException.conflict(DUPLICATE_NIC);
+            }
+            user.setNicNumber(nic);
+        } else if (req.nicNumber() != null
+                && !user.getNicNumber().equalsIgnoreCase(req.nicNumber().trim())) {
+            throw ApiException.badRequest("NIC number cannot be changed once it has been added");
+        }
         user.setFullName(req.fullName().trim());
         user.setPhone(req.phone().trim());
         user.setIdDocumentNumber(blankToNull(req.idDocumentNumber()));
         user.setDrivingLicenseNo(blankToNull(req.drivingLicenseNo()));
         user.setCountry(blankToNull(req.country()));
-        return UserResponse.from(users.saveAndFlush(user));
+        try {
+            return UserResponse.from(users.saveAndFlush(user));
+        } catch (DataIntegrityViolationException ex) {
+            throw duplicateOrRethrow(ex);
+        }
     }
 
     /**

@@ -71,16 +71,17 @@ public final class UserDtos {
     public record AuthResponse(String token, UserResponse user) {
     }
 
-    /** Profile fields a user may change themselves; email, NIC, role and password are not editable here. */
+    /** A missing NIC may be completed once; existing NICs, email, role and password are not editable here. */
     public record UpdateProfileRequest(
             @NotBlank @Size(max = 255) String fullName,
             @NotBlank @Size(max = 20) String phone,
             @Size(max = 100) String idDocumentNumber,
             @Size(max = 100) String drivingLicenseNo,
-            @Size(max = 100) String country) {
+            @Size(max = 100) String country,
+            @Size(max = 20) @Pattern(regexp = SRI_LANKAN_NIC, message = NIC_MESSAGE) String nicNumber) {
     }
 
-    /** A user as returned by the API; never includes the password hash or the NIC number. */
+    /** A user as returned by the API; never includes the password hash or NIC, only whether one is on file. */
     public record UserResponse(
             UUID id,
             String email,
@@ -91,12 +92,14 @@ public final class UserDtos {
             String drivingLicenseNo,
             String country,
             boolean active,
+            boolean hasNicNumber,
             LocalDateTime createdAt) {
 
         public static UserResponse from(User u) {
             return new UserResponse(u.getUserId(), u.getEmail(), u.getFullName(), u.getPhone(), u.getRole(),
                     u.getIdDocumentNumber(), u.getDrivingLicenseNo(), u.getCountry(),
-                    Boolean.TRUE.equals(u.getIsActive()), u.getCreatedAt());
+                    Boolean.TRUE.equals(u.getIsActive()), u.getNicNumber() != null && !u.getNicNumber().isBlank(),
+                    u.getCreatedAt());
         }
     }
 }

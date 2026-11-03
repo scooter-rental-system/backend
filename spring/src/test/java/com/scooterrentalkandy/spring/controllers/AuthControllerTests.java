@@ -253,7 +253,7 @@ class AuthControllerTests extends PostgresIntegrationTest {
         mvc.perform(json(put("/api/me").header(HttpHeaders.AUTHORIZATION, bearer(jwt.issue(rider))), """
                         {"fullName": "Renamed Rider", "phone": "+94 77 222 2222", "idDocumentNumber": "",
                          "drivingLicenseNo": "B7654321", "country": "India",
-                         "email": "taken.over@example.test", "nicNumber": "CHANGED", "role": "ADMIN",
+                         "email": "taken.over@example.test", "role": "ADMIN",
                          "password": "new-password-1", "passwordHash": "x", "active": false, "isActive": false}"""))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.fullName").value("Renamed Rider"))
@@ -262,6 +262,7 @@ class AuthControllerTests extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.country").value("India"))
                 .andExpect(jsonPath("$.email").value(email))
                 .andExpect(jsonPath("$.role").value("USER"))
+                .andExpect(jsonPath("$.hasNicNumber").value(true))
                 .andExpect(jsonPath("$.active").value(true));
 
         assertThat(users.findById(rider.getUserId())).get().satisfies(u -> {
