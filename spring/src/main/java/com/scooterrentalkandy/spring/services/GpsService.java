@@ -45,6 +45,17 @@ public class GpsService {
     static final Duration DEVICE_CLOCK_TOLERANCE = Duration.ofMinutes(2);
     /** Minimum spacing of the rider's browser reports for one rental. */
     static final Duration MIN_RIDER_REPORT_INTERVAL = Duration.ofSeconds(5);
+    /**
+     * Above this, a speed from the rider's phone/browser is not a credible scooter speed (a GPS jump, a test
+     * coordinate): a reported value this high is ignored in favour of the speed derived from the positions, and no
+     * rider speed above it counts towards a speed alert. Stored speeds stay approximate monitoring data.
+     */
+    public static final BigDecimal MAX_CREDIBLE_RIDER_SPEED_KMH = new BigDecimal("150");
+    /**
+     * Rider (phone) GPS speeds are approximate: a speed alert needs this many consecutive credible reports over the
+     * limit, so one spike never raises one. A dedicated tracker (POST /api/gps/pings) keeps the single-crossing rule.
+     */
+    public static final int SUSTAINED_RIDER_REPORTS = 3;
 
     private final GpsPingRepository pings;
     private final SpeedViolationRepository violations;
@@ -75,6 +86,11 @@ public class GpsService {
     @Transactional
     public void record(Scooter scooter, double lat, double lng, BigDecimal speed, LocalDateTime at,
                        UUID expectedBookingId) {
+        record(scooter, lat, lng, speed, at, expectedBookingId, false);
+    }
+
+    private void record(Scooter scooter, double lat, double lng, BigDecimal speed, LocalDateTime at,
+                        UUID expectedBookingId, boolean fromRider) {
         LocalDateTime when = at == null ? LocalDateTime.now(clock) : at;
         BigDecimal latitude = BigDecimal.valueOf(lat).setScale(6, RoundingMode.HALF_UP);
         BigDecimal longitude = BigDecimal.valueOf(lng).setScale(6, RoundingMode.HALF_UP);
@@ -104,11 +120,40 @@ public class GpsService {
         scooter.setLastSeenAt(when);
         scooter.setLastSpeedKmh(kmh);
         scooters.save(scooter);
-        // Stateless crossing check: previous <= 60 and now > 60. Continuous speeding raises no further alerts.
+        if (fromRider) {
+            // Phone GPS: only a run of credible over-limit reports, once per run.
+            if (rental != null && sustainedRiderOverspeedStarts(rental)) {
+                speedViolation(scooter, rental, kmh, latitude, longitude, when);
+            }
+            return;
+        }
+        // Tracker: stateless crossing check, previous <= 60 and now > 60. Continuous speeding raises no further alerts.
         boolean wasWithinLimit = previous == null || previous.compareTo(SPEED_LIMIT_KMH) <= 0;
         if (wasWithinLimit && kmh.compareTo(SPEED_LIMIT_KMH) > 0) {
             speedViolation(scooter, rental, kmh, latitude, longitude, when);
         }
+    }
+
+    /**
+     * Whether the rental's latest {@link #SUSTAINED_RIDER_REPORTS} reports (the newest just stored) are all credibly
+     * over the limit while the one before them was not: the moment a sustained run begins, so it alerts once.
+     */
+    private boolean sustainedRiderOverspeedStarts(Booking rental) {
+        List<GpsPing> latest = pings.findTop4ByBooking_BookingIdOrderByRecordedAtDesc(rental.getBookingId());
+        if (latest.size() < SUSTAINED_RIDER_REPORTS) {
+            return false;
+        }
+        for (int i = 0; i < SUSTAINED_RIDER_REPORTS; i++) {
+            if (!credibleOverLimit(latest.get(i).getSpeedKmh())) {
+                return false;
+            }
+        }
+        return latest.size() == SUSTAINED_RIDER_REPORTS
+                || !credibleOverLimit(latest.get(SUSTAINED_RIDER_REPORTS).getSpeedKmh());
+    }
+
+    private static boolean credibleOverLimit(BigDecimal kmh) {
+        return kmh.compareTo(SPEED_LIMIT_KMH) > 0 && kmh.compareTo(MAX_CREDIBLE_RIDER_SPEED_KMH) <= 0;
     }
 
     /**
@@ -126,10 +171,13 @@ public class GpsService {
     }
 
     /**
-     * A location the rider's browser/device reports during their own rental. The rider comes from the token and
-     * the scooter from the booking; the time is the server's. Without a speed from the device, it is derived
-     * from the previous stored report (0 for the first). Reports closer than {@link #MIN_RIDER_REPORT_INTERVAL}
-     * to the previous one are ignored; device reports are not throttled, as buffered history may arrive in bursts.
+     * A location the rider's browser/device reports during their own rental: the customer's phone, not a tracker on
+     * the scooter, so its position and speed are approximate monitoring data (never billed). The rider comes from
+     * the token and the scooter from the booking; the time is the server's. Without a credible speed from the
+     * browser (none, or above {@link #MAX_CREDIBLE_RIDER_SPEED_KMH}), it is derived from the previous stored report
+     * (0 for the first). A speed alert needs {@link #SUSTAINED_RIDER_REPORTS} consecutive credible over-limit
+     * reports. Reports closer than {@link #MIN_RIDER_REPORT_INTERVAL} to the previous one are ignored; device
+     * reports are not throttled, as buffered history may arrive in bursts.
      *
      * @return whether the report was recorded
      */
@@ -148,9 +196,11 @@ public class GpsService {
         if (previous != null && previous.getRecordedAt().isAfter(now.minus(MIN_RIDER_REPORT_INTERVAL))) {
             return false;
         }
-        BigDecimal speed = req.speedKmh() != null ? req.speedKmh()
+        boolean credibleReported = req.speedKmh() != null
+                && req.speedKmh().compareTo(MAX_CREDIBLE_RIDER_SPEED_KMH) <= 0;
+        BigDecimal speed = credibleReported ? req.speedKmh()
                 : derivedSpeedKmh(previous, req.latitude(), req.longitude(), now);
-        record(b.getScooter(), req.latitude(), req.longitude(), speed, now, b.getBookingId());
+        record(b.getScooter(), req.latitude(), req.longitude(), speed, now, b.getBookingId(), true);
         return true;
     }
 
@@ -214,10 +264,13 @@ public class GpsService {
         LocalDateTime end = b.getEndTime() != null ? b.getEndTime() : b.getEndedAt();
         return new BookingGpsHistory(b.getBookingId(), b.getReference(), b.getUser().getFullName(),
                 b.getScooter().getCode(), b.getScooter().getModel(), b.getScooter().getPlateNumber(),
-                b.getStatus().name(), b.getStartTime(), end, points, distance.totalKm(points));
+                b.getStatus().name(), b.getActualStartTime(), end, points, distance.totalKm(points));
     }
 
-    /** computeTotalDistance: distance along the booking's GPS logs between the given times. */
+    /**
+     * computeTotalDistance: the tracked distance along the booking's GPS logs between the given times. Approximate;
+     * billed only for rentals started before odometer readings were recorded (V22).
+     */
     @Transactional(readOnly = true)
     public BigDecimal rentalDistanceKm(UUID bookingId, LocalDateTime from, LocalDateTime to) {
         return distance.totalKm(pings.findByBooking_BookingIdAndRecordedAtBetweenOrderByRecordedAtAsc(bookingId, from, to)
@@ -250,10 +303,14 @@ public class GpsService {
         return pings.deleteOlderThanOutsideActiveRentals(cutoff);
     }
 
-    /** Pings belong to a booking only while its rental is under way: started and not yet ended. */
+    /**
+     * Pings belong to a booking only while its rental is under way: ACTIVE, actually started (the server-recorded
+     * actualStartTime, not the planned pickup time) and not yet ended. A booking waiting for pickup has none.
+     */
     private Booking rentalUnderWay(Scooter scooter, LocalDateTime at) {
         return bookings.findFirstByScooter_ScooterIdAndStatus(scooter.getScooterId(), BookingStatus.ACTIVE)
-                .filter(b -> !at.isBefore(b.getStartTime()) && b.getEndedAt() == null)
+                .filter(b -> b.getActualStartTime() != null && !at.isBefore(b.getActualStartTime())
+                        && b.getEndedAt() == null)
                 .orElse(null);
     }
 

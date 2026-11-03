@@ -6,8 +6,10 @@ import java.util.List;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.dto.BillingDtos.InvoiceResponse;
 import com.scooterrentalkandy.spring.dto.BookingDtos.BookingResponse;
+import com.scooterrentalkandy.spring.dto.BookingDtos.CompleteRentalRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.ContractResponse;
 import com.scooterrentalkandy.spring.dto.BookingDtos.CreateBookingRequest;
+import com.scooterrentalkandy.spring.dto.BookingDtos.HandoverRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.Quote;
 import com.scooterrentalkandy.spring.dto.BookingDtos.QuoteRequest;
 import com.scooterrentalkandy.spring.dto.BookingDtos.SignContractRequest;
@@ -74,10 +76,30 @@ public class BookingController {
         return bookings.signContract(id, user, req, http.getRemoteAddr());
     }
 
-    /**  the customer ends the rental (an admin may do it for them). */
+    /**
+     * Admin only (URL rule /api/admin/**): the scooter was physically handed over, with the starting odometer. The
+     * rental starts only when the customer then confirms it.
+     */
+    @PostMapping("/api/admin/bookings/{id}/handover")
+    public BookingResponse handover(@PathVariable UUID id, @CurrentUser AuthUser admin,
+                                    @RequestBody(required = false) HandoverRequest req) {
+        return bookings.confirmHandover(id, admin, req == null ? null : req.startOdometerKm());
+    }
+
+    /** The customer confirms the start of their own rental after the handover; the rental starts now. */
+    @PostMapping("/api/bookings/{id}/start")
+    public BookingResponse start(@PathVariable UUID id, @CurrentUser AuthUser user) {
+        return bookings.confirmStart(id, user);
+    }
+
+    /**
+     * Ends the rental when the scooter is returned: an admin enters the ending odometer. Retrying the settlement of a
+     * rental that has already ended (for example after a declined card) is open to the customer too.
+     */
     @PutMapping("/api/bookings/{id}/complete")
-    public BookingResponse complete(@PathVariable UUID id, @CurrentUser AuthUser user) {
-        return bookings.complete(id, user);
+    public BookingResponse complete(@PathVariable UUID id, @CurrentUser AuthUser user,
+                                    @RequestBody(required = false) CompleteRentalRequest req) {
+        return bookings.complete(id, user, req == null ? null : req.endOdometerKm());
     }
 
     @PostMapping("/api/bookings/{id}/cancel")

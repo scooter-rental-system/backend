@@ -45,7 +45,7 @@ public class BillingService {
         this.currency = props.billing().currency();
     }
 
-    /** One FINAL invoice per booking: rental days and extra hours, GPS distance and gear, exactly as billed. */
+    /** One FINAL invoice per booking: rental days and extra hours, odometer distance and gear, exactly as billed. */
     @Transactional
     public Invoice issueFinalInvoice(Booking b, FinalBill bill) {
         if (invoices.findFirstByBooking_BookingIdAndKind(b.getBookingId(), Invoice.Kind.FINAL).isPresent()) {
@@ -67,8 +67,13 @@ public class BillingService {
             inv.addLine(scooter + ": " + bill.extraHours() + " extra hour" + (bill.extraHours() == 1 ? "" : "s"),
                     BigDecimal.valueOf(bill.extraHours()), bill.hourlyRate(), bill.extraHourCost());
         }
-        // Only the kilometres above the allowance (120 km per charged day) are charged; the line says how many.
-        inv.addLine("Distance from GPS: " + bill.distanceKm().toPlainString() + " km, "
+        // Only the kilometres above the allowance (120 km per charged day) are charged; the line says how many, and
+        // from which odometer readings (rentals started before readings were recorded were measured by GPS).
+        String measured = b.getStartOdometerKm() != null && b.getEndOdometerKm() != null
+                ? "Distance by odometer (" + b.getStartOdometerKm().toPlainString() + " to "
+                        + b.getEndOdometerKm().toPlainString() + "): "
+                : "Distance from GPS: ";
+        inv.addLine(measured + bill.distanceKm().toPlainString() + " km, "
                         + bill.includedKm().toPlainString() + " km included; excess km",
                 bill.excessKm(), bill.perKmRate(), bill.distanceCost());
         for (GearLine g : bill.gear()) {

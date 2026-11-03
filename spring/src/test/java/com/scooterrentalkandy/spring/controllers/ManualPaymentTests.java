@@ -227,14 +227,21 @@ class ManualPaymentTests extends PostgresIntegrationTest {
         return receipts.findPendingByBookingId(bookingId).orElseThrow().getPaymentReceiptId();
     }
 
-    /** The initial payment made by {@code method} and approved; the rental started {@code minutesAgo} minutes ago. */
+    /**
+     * The initial payment made by {@code method} and approved, the scooter handed over at an odometer of 1000.0 km and
+     * the start confirmed by the customer; the rental then moved to have started {@code minutesAgo} minutes ago.
+     */
     private UUID transferRentalUnderWay(PaymentMethod method, long minutesAgo) throws Exception {
         UUID id = signedBooking();
         choose(id, method).andExpect(status().isOk());
         submit(id).andExpect(status().isOk());
         approve(admin, pendingReceipt(id), "250").andExpect(status().isOk());
+        mvc.perform(json(as(admin, post("/api/admin/bookings/" + id + "/handover")), "{\"startOdometerKm\": 1000.0}"))
+                .andExpect(status().isOk());
+        mvc.perform(as(customer, post("/api/bookings/" + id + "/start"))).andExpect(status().isOk());
         Booking b = bookings.findById(id).orElseThrow();
-        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
+        b.setActualStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
+        b.setCustomerStartConfirmedAt(b.getActualStartTime());
         bookings.saveAndFlush(b);
         return id;
     }
@@ -258,8 +265,9 @@ class ManualPaymentTests extends PostgresIntegrationTest {
                 .andExpect(status().isOk());
     }
 
+    /** An admin ends the rental; the odometer is unchanged since the handover (no excess distance). */
     private ResultActions end(UUID bookingId) throws Exception {
-        return mvc.perform(as(customer, put("/api/bookings/" + bookingId + "/complete")));
+        return mvc.perform(json(as(admin, put("/api/bookings/" + bookingId + "/complete")), "{\"endOdometerKm\": 1000.0}"));
     }
 
     private Payment payment(UUID bookingId) {
@@ -453,9 +461,11 @@ class ManualPaymentTests extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.reviewedBy").value(admin.getFullName()))
                 .andExpect(jsonPath("$.reviewedAt").exists());
 
+        // Approved: ready for pickup, not started. The scooter stays AVAILABLE, held by the booking.
         Booking b = booking(id);
-        assertThat(b.getStatus()).isEqualTo(BookingStatus.ACTIVE);
-        assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.RENTED);
+        assertThat(b.getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
+        assertThat(b.getActualStartTime()).isNull();
+        assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
         Payment p = payment(id);
         assertThat(p.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
         assertThat(p.getPaidAt()).isNotNull();
@@ -478,12 +488,15 @@ class ManualPaymentTests extends PostgresIntegrationTest {
 
         approve(saveUser(Role.SUPER_ADMIN), pendingReceipt(id), "250.00").andExpect(status().isOk());
 
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        Booking b = booking(id);
+        assertThat(b.getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
+        assertThat(b.getActualStartTime()).isNull();
+        assertThat(b.getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
         assertThat(messages(customer)).anyMatch(m -> m.contains("Your bank transfer of LKR 250.00 was approved."));
     }
 
     @Test
-    void approvingTwiceRecordsThePaymentOnceAndActivatesOnce() throws Exception {
+    void approvingTwiceRecordsThePaymentOnceAndConfirmsTheBookingOnce() throws Exception {
         UUID id = signedBooking();
         choose(id, PaymentMethod.QR_TRANSFER).andExpect(status().isOk());
         submit(id).andExpect(status().isOk());
@@ -541,7 +554,7 @@ class ManualPaymentTests extends PostgresIntegrationTest {
         approve(admin, first, "250").andExpect(status().isConflict());
         assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.PENDING);
         approve(admin, second, "250").andExpect(status().isOk());
-        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         assertThat(receipts.findById(first).orElseThrow().getStatus()).isEqualTo(PaymentReceipt.Status.REJECTED);
         reject(admin, second, "Too late").andExpect(status().isConflict());
     }

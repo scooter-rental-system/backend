@@ -21,6 +21,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -88,6 +89,9 @@ class BookingTrackingTests extends PostgresIntegrationTest {
         b.setScooter(scooters.saveAndFlush(s));
         b.setStatus(status);
         b.setStartTime(now.minusHours(1));
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setPickupLocation("Test pickup");
         if (status == BookingStatus.COMPLETED) {
             b.setEndTime(now.minusMinutes(10));

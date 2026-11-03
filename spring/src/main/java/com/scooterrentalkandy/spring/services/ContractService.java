@@ -16,7 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class ContractService {
 
-    public static final String TERMS_VERSION = "2026.3";
+    public static final String TERMS_VERSION = "2026.4";
 
     private static final DateTimeFormatter WHEN = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm");
 
@@ -27,19 +27,22 @@ public class ContractService {
             Between Scooter Rent Kandy ("the Company") and %s ("the Renter"),
             ID/Passport: %s, Driving licence: %s.
 
-            1. VEHICLE. The Company rents to the Renter scooter %s (%s), plate %s, from %s until the
-               Renter ends the rental, pickup at %s. Gear: %s.
+            1. VEHICLE. The Company rents to the Renter scooter %s (%s), plate %s, for pickup from %s
+               at %s. Gear: %s. The rental starts when the Company hands the scooter over, recording its
+               odometer reading, and the Renter then confirms the start; it runs until the scooter is
+               returned and the Company records the odometer reading again.
 
             2. CHARGES. Scooter time: LKR %s for each complete 24 hours; time after the complete days is
                charged at LKR %s per started hour when it is 8 hours or less, or as one more day when it is
                more than 8 hours (minimum one hour). Distance: the rental includes 120 km, and each further
-               charged day adds another 120 km; only kilometres above that allowance, measured from the
-               scooter's GPS logs, are charged, at LKR %s per km. Gear: each item's daily rate for each
-               complete 24 hours; up to 12 further hours are included and more than 12 hours is one more day
-               (minimum one day). The rental has no fixed end: an initial charge of LKR %s (the one-hour
-               minimum and one day of gear) is taken when booking. When the Renter ends the rental, the
-               final total is calculated and the difference is charged to, or refunded to, the same payment
-               method.
+               charged day adds another 120 km; only kilometres above that allowance are charged, at LKR %s
+               per km, the distance being the difference between the odometer readings at handover and
+               return. Gear: each item's daily rate for each complete 24 hours; up to 12 further hours are
+               included and more than 12 hours is one more day (minimum one day). Time is charged from the
+               confirmed start of the rental, not from the planned pickup time. The rental has no fixed end:
+               an initial charge of LKR %s (the one-hour minimum and one day of gear) is taken when booking.
+               When the rental ends, the final total is calculated and the difference is charged to, or
+               refunded to, the same payment method.
 
             3. LICENCE AND RIDERS. The Renter confirms they hold a licence valid for riding this vehicle
                in Sri Lanka (including an International Driving Permit or Sri Lankan recognition permit
@@ -48,18 +51,21 @@ public class ContractService {
             4. CARE OF THE VEHICLE. The Renter will obey traffic laws, not ride under the influence of
                alcohol or drugs, not carry more than one passenger, and keep the scooter locked when parked.
 
-            5. END OF RENTAL. The Renter ends the rental when the scooter is returned. Charges accrue until
-               the rental is ended.
+            5. END OF RENTAL. The rental ends when the Renter returns the scooter and the Company records
+               the odometer reading. Charges accrue until then.
 
             6. DAMAGE AND LOSS. The Renter is responsible for damage, traffic fines and loss of the scooter
                or rented gear during the rental.
 
-            7. TRACKING. The scooter is fitted with a GPS tracker that logs its position every 30 seconds.
-               Location data is used to calculate distance charges, to monitor speeding (over 60 km/h), for
-               fleet safety and theft recovery, and to support the Renter during the rental.
+            7. TRACKING. During the rental the scooter's position is logged by its GPS tracker and, with the
+               Renter's permission, by the Renter's browser while the booking page is open. Location data is
+               used to show the approximate route, to monitor speeding (over 60 km/h), for fleet safety and
+               theft recovery, and to support the Renter during the rental. It is not used to charge for
+               distance.
 
-            8. CANCELLATION. A booking can be cancelled before its start time for a full refund. Once the
-               rental has started it cannot be cancelled; it is ended and billed as in clause 2.
+            8. CANCELLATION. A paid booking can be cancelled for a full refund until the rental starts (once
+               the scooter has been handed over, at the rental counter only). Once the rental has started it
+               cannot be cancelled; it is ended and billed as in clause 2.
             """;
 
     private final ContractRepository contracts;

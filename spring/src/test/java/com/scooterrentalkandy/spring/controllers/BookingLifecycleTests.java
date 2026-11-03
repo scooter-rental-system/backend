@@ -38,6 +38,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -160,6 +161,9 @@ class BookingLifecycleTests extends PostgresIntegrationTest {
         b.setScooter(availableScooter());
         b.setStatus(status);
         b.setStartTime(LocalDateTime.now().minusHours(3));
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setPickupLocation("Test pickup");
         if (status == BookingStatus.COMPLETED) {
             b.setEndTime(LocalDateTime.now().minusHours(1));
@@ -373,7 +377,7 @@ class BookingLifecycleTests extends PostgresIntegrationTest {
     }
 
     /**
-     * Ending a rental needs GPS distance and a payment charge, so only the refusals that happen before either is
+     * Ending a rental needs the ending odometer and a payment charge, so only the refusals that happen before either is
      * reached are covered here.
      */
     @Test

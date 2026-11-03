@@ -58,6 +58,17 @@ public final class BookingDtos {
     public record SignContractRequest(@NotBlank String signedName, boolean agree) {
     }
 
+    /** Admin only: the scooter was handed over with this odometer reading (km, at most one decimal place). */
+    public record HandoverRequest(BigDecimal startOdometerKm) {
+    }
+
+    /**
+     * Ending the rental. {@code endOdometerKm} (admin only) is required to end it: the odometer at return. A retry of
+     * the settlement of a rental that has already ended needs none; if one is given it must be the recorded reading.
+     */
+    public record CompleteRentalRequest(BigDecimal endOdometerKm) {
+    }
+
     /** Current gear rate, read from the gear item (rates are not copied onto bookings). */
     public record GearLineResponse(UUID gearItemId, String name, int quantity, BigDecimal dailyRate) {
     }
@@ -96,11 +107,13 @@ public final class BookingDtos {
 
     /**
      * Where the booking is in its life, for display. Derived from the SDS status plus payment and times:
-     * AWAITING_PAYMENT, PAYMENT_FAILED, UPCOMING (paid, start time ahead), IN_PROGRESS, BALANCE_DUE (ended,
-     * remaining balance not yet collected), COMPLETED, CANCELLED, REFUNDED.
+     * AWAITING_PAYMENT, PAYMENT_FAILED, READY_FOR_PICKUP (paid, waiting for the handover and the customer's start
+     * confirmation; {@code handoverConfirmedAt} tells which), UPCOMING (only rentals activated before the pickup step
+     * existed, whose start time is still ahead), IN_PROGRESS, BALANCE_DUE (ended, remaining balance not yet
+     * collected), COMPLETED, CANCELLED, REFUNDED.
      */
-    public enum Stage { AWAITING_PAYMENT, PAYMENT_FAILED, UPCOMING, IN_PROGRESS, BALANCE_DUE, COMPLETED, CANCELLED,
-        REFUNDED }
+    public enum Stage { AWAITING_PAYMENT, PAYMENT_FAILED, READY_FOR_PICKUP, UPCOMING, IN_PROGRESS, BALANCE_DUE,
+        COMPLETED, CANCELLED, REFUNDED }
 
     public record BookingResponse(
             UUID id,
@@ -109,11 +122,21 @@ public final class BookingDtos {
             Stage stage,
             CustomerSummary customer,
             ScooterSummary scooter,
+            /** The planned pickup time. */
             LocalDateTime startTime,
+            /** When the rental really started (server time); null until the customer confirms the start. */
+            LocalDateTime actualStartTime,
+            LocalDateTime handoverConfirmedAt,
+            /** The admin who confirmed the handover. */
+            String handoverConfirmedBy,
+            LocalDateTime customerStartConfirmedAt,
+            BigDecimal startOdometerKm,
+            BigDecimal endOdometerKm,
             LocalDateTime endTime,
             Long billableHours,
             /** How the ended rental is charged (null until it ends); see PricingService. */
             RentalBreakdown breakdown,
+            /** The billed distance: the odometer difference (completed rentals). */
             BigDecimal distanceKm,
             BigDecimal totalCost,
             /** Balance due only: the frozen settlement (endTime and totalCost stay null until COMPLETED). */

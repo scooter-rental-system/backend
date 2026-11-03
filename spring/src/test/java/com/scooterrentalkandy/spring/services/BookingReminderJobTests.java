@@ -25,6 +25,7 @@ import com.scooterrentalkandy.spring.repository.NotificationRepository;
 import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -123,6 +124,9 @@ class BookingReminderJobTests extends PostgresIntegrationTest {
         b.setScooter(scooter);
         b.setStatus(status);
         b.setStartTime(start);
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setPickupLocation("Kandy Lake");
         if (status == BookingStatus.CANCELLED) {
             b.setCancelledAt(start.minusDays(2));
@@ -139,26 +143,29 @@ class BookingReminderJobTests extends PostgresIntegrationTest {
     }
 
     @Test
-    void remindsPaidRentalsStartingTomorrowExactlyOnce() {
+    void remindsBookingsReadyForPickupTomorrowExactlyOnce() {
         // 08:00 Colombo on 1 June 2099 is 02:30 UTC.
         BookingReminderJob job = jobAt("2099-06-01T02:30:00Z");
-        Booking tomorrow = booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 6, 2, 9, 30));
-        Booking lastMinuteOfTomorrow = booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 6, 2, 23, 59));
-        Booking today = booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 6, 1, 18, 0));
-        Booking dayAfter = booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 6, 3, 0, 0));
+        Booking tomorrow = booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 6, 2, 9, 30));
+        Booking lastMinuteOfTomorrow = booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 6, 2, 23, 59));
+        Booking today = booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 6, 1, 18, 0));
+        Booking dayAfter = booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 6, 3, 0, 0));
         Booking unpaid = booking(BookingStatus.PENDING, LocalDateTime.of(2099, 6, 2, 10, 0));
         Booking cancelled = booking(BookingStatus.CANCELLED, LocalDateTime.of(2099, 6, 2, 11, 0));
+        // Already started (an ACTIVE rental planned for tomorrow, picked up early): no pickup reminder.
+        Booking started = booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 6, 2, 12, 0));
 
         assertThat(job.dailyReminders()).isEqualTo(2);
 
         assertThat(inApp(tomorrow)).singleElement().satisfies(n -> {
-            assertThat(n.getSubject()).isEqualTo("Rental starts tomorrow: " + tomorrow.getReference());
-            assertThat(n.getMessage()).isEqualTo("Your Reminder Scooter is ready from 09:30 tomorrow at Kandy Lake."
-                    + " Bring your driving licence and ID.");
+            assertThat(n.getSubject()).isEqualTo("Pickup tomorrow: " + tomorrow.getReference());
+            assertThat(n.getMessage()).isEqualTo("Your Reminder Scooter is ready for pickup from 09:30 tomorrow at "
+                    + "Kandy Lake. Bring your driving licence and ID. Your rental starts when our team hands the "
+                    + "scooter over and you confirm the start on your booking.");
         });
         assertThat(reminderSentAt(tomorrow)).isEqualTo(LocalDateTime.of(2099, 6, 1, 2, 30));
         assertThat(inApp(lastMinuteOfTomorrow)).hasSize(1);
-        for (Booking none : List.of(today, dayAfter, unpaid, cancelled)) {
+        for (Booking none : List.of(today, dayAfter, unpaid, cancelled, started)) {
             assertThat(inApp(none)).isEmpty();
             assertThat(reminderSentAt(none)).isNull();
         }
@@ -176,9 +183,9 @@ class BookingReminderJobTests extends PostgresIntegrationTest {
     @Test
     void instancesRunningAtTheSameTimeSendOneReminderPerBooking() throws Exception {
         List<Booking> due = List.of(
-                booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 7, 2, 9, 0)),
-                booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 7, 2, 12, 0)),
-                booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 7, 2, 15, 0)));
+                booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 7, 2, 9, 0)),
+                booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 7, 2, 12, 0)),
+                booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 7, 2, 15, 0)));
         int instances = 4;
         CountDownLatch start = new CountDownLatch(1);
         List<CompletableFuture<Integer>> runs = new ArrayList<>();
@@ -211,8 +218,8 @@ class BookingReminderJobTests extends PostgresIntegrationTest {
     void tomorrowIsTheColomboDate() {
         // 19:00 UTC on 1 Aug is already 00:30 on 2 Aug in Colombo, so "tomorrow" is 3 Aug.
         BookingReminderJob job = jobAt("2099-08-01T19:00:00Z");
-        Booking utcTomorrow = booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 8, 2, 10, 0));
-        Booking colomboTomorrow = booking(BookingStatus.ACTIVE, LocalDateTime.of(2099, 8, 3, 10, 0));
+        Booking utcTomorrow = booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 8, 2, 10, 0));
+        Booking colomboTomorrow = booking(BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 8, 3, 10, 0));
 
         job.dailyReminders();
 
@@ -224,7 +231,7 @@ class BookingReminderJobTests extends PostgresIntegrationTest {
 
     @Test
     void anInactiveCustomerIsClaimedButNotNotified() {
-        Booking b = booking(customer(false), BookingStatus.ACTIVE, LocalDateTime.of(2099, 9, 2, 10, 0));
+        Booking b = booking(customer(false), BookingStatus.READY_FOR_PICKUP, LocalDateTime.of(2099, 9, 2, 10, 0));
 
         jobAt("2099-09-01T02:30:00Z").dailyReminders();
 

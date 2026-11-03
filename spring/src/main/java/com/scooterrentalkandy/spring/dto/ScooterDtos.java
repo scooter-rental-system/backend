@@ -44,7 +44,7 @@ public final class ScooterDtos {
             String imageUrl,
             String description,
             boolean deleted,
-            /** Bookable right now: AVAILABLE and not held by a pending or active booking. */
+            /** Bookable right now: AVAILABLE and not held by a pending, ready-for-pickup or active booking. */
             boolean available) {
     }
 }

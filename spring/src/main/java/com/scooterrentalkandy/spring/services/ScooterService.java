@@ -87,7 +87,7 @@ public class ScooterService {
             throw ApiException.conflict("Scooter is out on a rental; it is released when the rental ends");
         }
         if (status == ScooterStatus.RENTED) {
-            throw ApiException.badRequest("Scooters become RENTED only through a paid booking");
+            throw ApiException.badRequest("Scooters become RENTED only when a rental starts");
         }
         if (status == ScooterStatus.MAINTENANCE
                 && bookings.existsByScooter_ScooterIdAndStatusIn(id, BookingStatus.BLOCKING)) {

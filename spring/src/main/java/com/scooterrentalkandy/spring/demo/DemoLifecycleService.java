@@ -1,5 +1,6 @@
 package com.scooterrentalkandy.spring.demo;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -69,29 +70,30 @@ public class DemoLifecycleService {
             throw ApiException.conflict("The customer must sign the rental agreement before the demo activation");
         }
         requireNoPayment(b);
-        LocalDateTime now = LocalDateTime.now(clock);
-        if (b.getStartTime().isAfter(now)) {
-            // The rental runs from the activation, so it is in progress at once (GPS, repairs, ending).
-            b.setStartTime(now);
-        }
-        b.setStatus(BookingStatus.ACTIVE);
-        b.getScooter().setStatus(ScooterStatus.RENTED);
-        log.warn("VIVA DEMO: booking {} activated without payment by admin {}", b.getReference(), admin.id());
-        notifications.notify(b.getUser(), "Viva demo: rental started " + b.getReference(),
-                "Your rental of " + b.getScooter().getModel() + " (" + b.getScooter().getPlateNumber()
-                        + ") was started by our team in viva demo mode. " + NO_PAYMENT);
-        notifications.notifyAdmins("VIVA DEMO: rental activated " + b.getReference(),
-                "Started without payment in viva demo mode. " + NO_PAYMENT);
+        // Skips only the payment: the booking is ready for pickup, and the rental starts through the normal handover
+        // (with the starting odometer) and the customer's start confirmation. The planned pickup time is kept.
+        b.setStatus(BookingStatus.READY_FOR_PICKUP);
+        log.warn("VIVA DEMO: booking {} marked ready for pickup without payment by admin {}", b.getReference(),
+                admin.id());
+        notifications.notify(b.getUser(), "Viva demo: ready for pickup " + b.getReference(),
+                "Your " + b.getScooter().getModel() + " (" + b.getScooter().getPlateNumber()
+                        + ") was confirmed by our team in viva demo mode. " + BookingService.RENTAL_STARTS + " "
+                        + NO_PAYMENT);
+        notifications.notifyAdmins("VIVA DEMO: ready for pickup " + b.getReference(),
+                "Confirmed without payment in viva demo mode; confirm the handover to continue. " + NO_PAYMENT);
         return bookingService.get(bookingId, admin);
     }
 
-    /** Ends a demo rental in progress: the real final bill and invoice, nothing charged. */
-    public BookingResponse end(UUID bookingId, AuthUser admin) {
+    /** Ends a demo rental in progress with the ending odometer: the real final bill and invoice, nothing charged. */
+    public BookingResponse end(UUID bookingId, AuthUser admin, BigDecimal endOdometerKm) {
         Booking b = demoRental(bookingId);
+        if (b.getStatus() != BookingStatus.ACTIVE) {
+            throw ApiException.conflict("This demo booking has not started yet");
+        }
         if (b.getEndedAt() != null) {
             throw ApiException.conflict("This demo rental has already ended");
         }
-        BookingResponse ended = bookingService.endWithoutCollecting(bookingId, admin);
+        BookingResponse ended = bookingService.endWithoutCollecting(bookingId, admin, endOdometerKm);
         log.warn("VIVA DEMO: booking {} ended without payment by admin {}", ended.reference(), admin.id());
         notifications.notifyAdmins("VIVA DEMO: rental ended " + ended.reference(), "Final total calculated: "
                 + ended.pendingTotalCost() + ". " + NO_PAYMENT);
@@ -117,10 +119,11 @@ public class DemoLifecycleService {
         return bookingService.get(bookingId, admin);
     }
 
-    /** An ACTIVE booking without a payment record: only demo activation creates one. */
+    /** A READY_FOR_PICKUP or ACTIVE booking without a payment record: only demo activation creates one. */
     private Booking demoRental(UUID bookingId) {
         Booking b = bookings.findWithDetailsByBookingId(bookingId).orElseThrow(() -> ApiException.notFound("Booking"));
-        if (b.getStatus() != BookingStatus.ACTIVE || payments.find(bookingId).isPresent()) {
+        boolean held = b.getStatus() == BookingStatus.READY_FOR_PICKUP || b.getStatus() == BookingStatus.ACTIVE;
+        if (!held || payments.find(bookingId).isPresent()) {
             throw ApiException.conflict("Only a rental started in viva demo mode can be ended or closed here");
         }
         return b;

@@ -63,14 +63,15 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * SDS 2.3 one ACTIVE booking per scooter is also enforced by a unique index; if the application check is ever
-     * bypassed (e.g. a race), the conflict is reported as 409. Other integrity failures stay server errors.
+     * SDS 2.3 one ACTIVE booking per scooter (with READY_FOR_PICKUP, one reservation) is also enforced by a unique
+     * index; if the application check is ever bypassed (e.g. a race), the conflict is reported as 409. Other integrity
+     * failures stay server errors.
      */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ErrorResponse> handleIntegrity(DataIntegrityViolationException ex) {
         String detail = String.valueOf(ex.getMostSpecificCause().getMessage()).toLowerCase();
-        if (detail.contains("ux_bookings_one_active_per_scooter")) {
-            return build(HttpStatus.CONFLICT, "This scooter already has an active rental", null);
+        if (detail.contains("ux_bookings_one_reservation_per_scooter")) {
+            return build(HttpStatus.CONFLICT, "This scooter is already reserved or out on a rental", null);
         }
         log.error("Data integrity violation", ex);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "Unexpected server error", null);

@@ -67,12 +67,17 @@ public final class GpsDtos {
                                          LocalDateTime recordedAt) {
     }
 
+    /**
+     * {@code distanceKm}: the tracked GPS distance along the trail, approximate and for monitoring only. The rental is
+     * billed by the odometer difference, never by this.
+     */
     public record Tracking(LivePosition position, List<Point> trail, BigDecimal distanceKm) {
     }
 
     /**
      * Admin-only: the GPS route of ONE rental, from its own stored reports in time order (kept for the normal
-     * retention period). {@code end} is the rental's end, or null while it is still under way.
+     * retention period). {@code start} is the actual start of the rental, {@code end} its end (null while it is still
+     * under way); {@code distanceKm} is the approximate tracked GPS distance, not the billed odometer distance.
      */
     public record BookingGpsHistory(UUID bookingId, String reference, String customerName, String scooterCode,
                                     String scooterModel, String plateNumber, String status, LocalDateTime start,

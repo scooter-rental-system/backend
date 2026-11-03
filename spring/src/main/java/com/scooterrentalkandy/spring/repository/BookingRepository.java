@@ -1,6 +1,7 @@
 package com.scooterrentalkandy.spring.repository;
 
 import jakarta.persistence.LockModeType;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
@@ -47,6 +48,10 @@ public interface BookingRepository extends JpaRepository<Booking, UUID> {
     List<Booking> findByStatusAndStartTimeLessThanEqualAndEndedAtIsNull(BookingStatus status, LocalDateTime now);
 
     /** IDs only: each candidate is then locked and re-checked in its own transaction. */
+    /** The highest odometer reading recorded for the scooter on any booking (an end reading is never below its start). */
+    @Query("select max(coalesce(b.endOdometerKm, b.startOdometerKm)) from Booking b where b.scooter.scooterId = :id")
+    BigDecimal findHighestOdometerKm(@Param("id") UUID scooterId);
+
     @Query("select b.bookingId from Booking b where b.status = :status and b.createdAt < :cutoff")
     List<UUID> findIdsByStatusAndCreatedAtBefore(@Param("status") BookingStatus status,
                                                  @Param("cutoff") LocalDateTime cutoff);
@@ -70,7 +75,7 @@ public interface BookingRepository extends JpaRepository<Booking, UUID> {
     @EntityGraph(attributePaths = {"scooter"})
     @Query("""
             select b from Booking b
-            where b.status in :statuses and b.startTime < :to and (b.endTime is null or b.endTime > :from)
+            where b.status in :statuses and b.actualStartTime < :to and (b.endTime is null or b.endTime > :from)
             """)
     List<Booking> findRentalsOverlapping(@Param("statuses") Collection<BookingStatus> statuses,
                                          @Param("from") LocalDateTime from, @Param("to") LocalDateTime to);

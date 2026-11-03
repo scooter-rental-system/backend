@@ -188,6 +188,7 @@ class ScooterPricingApiTests extends PostgresIntegrationTest {
         b.setScooter(s);
         b.setStatus(BookingStatus.COMPLETED);
         b.setStartTime(start);
+        b.setActualStartTime(start);
         b.setEndTime(end);
         b.setDistanceKm(bill.distanceKm());
         b.setTotalCost(bill.total());

@@ -12,18 +12,24 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
-/** SDS 2.3: only one ACTIVE booking per scooter, enforced by a partial unique index. Each test rolls back. */
+/**
+ * SDS 2.3: only one ACTIVE booking per scooter, and since V22 one reservation: a scooter holds at most one booking
+ * that is READY_FOR_PICKUP or ACTIVE, enforced by a partial unique index. Each test rolls back.
+ */
 @Transactional
 class ActiveBookingIndexTests extends PostgresIntegrationTest {
+
+    private static final String INDEX = "ux_bookings_one_reservation_per_scooter";
 
     @Autowired
     private DataSource dataSource;
 
     @Test
     void indexExists() {
-        assertThat(jdbc().queryForObject(
-                "SELECT indexdef FROM pg_indexes WHERE indexname = 'ux_bookings_one_active_per_scooter'",
-                String.class)).contains("UNIQUE").contains("(scooter_id)").contains("'ACTIVE'");
+        assertThat(jdbc().queryForObject("SELECT indexdef FROM pg_indexes WHERE indexname = ?", String.class, INDEX))
+                .contains("UNIQUE").contains("(scooter_id)").contains("'READY_FOR_PICKUP'").contains("'ACTIVE'");
+        assertThat(jdbc().queryForObject("SELECT count(*) FROM pg_indexes "
+                + "WHERE indexname = 'ux_bookings_one_active_per_scooter'", Integer.class)).isZero();
     }
 
     @Test
@@ -34,11 +40,33 @@ class ActiveBookingIndexTests extends PostgresIntegrationTest {
 
         assertThatThrownBy(() -> insertBooking(user, scooter, "ACTIVE"))
                 .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("ux_bookings_one_active_per_scooter");
+                .hasMessageContaining(INDEX);
     }
 
     @Test
-    void allowsOtherStatusesAlongsideTheActiveBooking() {
+    void aBookingReadyForPickupReservesTheScooterLikeAnActiveRental() {
+        UUID user = insertUser();
+        UUID waiting = insertScooter();
+        insertBooking(user, waiting, "READY_FOR_PICKUP");
+
+        assertThatThrownBy(() -> insertBooking(user, waiting, "READY_FOR_PICKUP"))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining(INDEX);
+    }
+
+    @Test
+    void aScooterOutOnARentalCannotAlsoBeReadyForPickup() {
+        UUID user = insertUser();
+        UUID riding = insertScooter();
+        insertBooking(user, riding, "ACTIVE");
+
+        assertThatThrownBy(() -> insertBooking(user, riding, "READY_FOR_PICKUP"))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining(INDEX);
+    }
+
+    @Test
+    void allowsOtherStatusesAlongsideTheReservation() {
         UUID user = insertUser();
         UUID scooter = insertScooter();
         insertBooking(user, scooter, "ACTIVE");
@@ -65,11 +93,13 @@ class ActiveBookingIndexTests extends PostgresIntegrationTest {
         return id;
     }
 
+    /** An ACTIVE row has its actual start (ck_bookings_actual_start). */
     private void insertBooking(UUID user, UUID scooter, String status) {
         UUID id = UUID.randomUUID();
         jdbc().update("INSERT INTO bookings (booking_id, reference, user_id, scooter_id, status, start_time, "
-                + "pickup_location, created_at) VALUES (?, ?, ?, ?, ?, now(), 'Test pickup', now())",
-                id, "R-" + id.toString().substring(0, 8), user, scooter, status);
+                + "actual_start_time, pickup_location, created_at) VALUES (?, ?, ?, ?, ?, now(), "
+                + "CASE WHEN ? = 'ACTIVE' THEN now() END, 'Test pickup', now())",
+                id, "R-" + id.toString().substring(0, 8), user, scooter, status, status);
     }
 
     private JdbcTemplate jdbc() {

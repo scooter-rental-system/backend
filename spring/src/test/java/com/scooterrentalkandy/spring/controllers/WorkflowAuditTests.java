@@ -34,6 +34,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.JwtService;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import com.scooterrentalkandy.spring.support.TestNics;
 import com.scooterrentalkandy.spring.support.TestPaymentGateway;
 import jakarta.persistence.EntityManager;
@@ -180,14 +181,21 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
         return receipts.findPendingByBookingId(id).orElseThrow().getPaymentReceiptId();
     }
 
-    /** The rental started {@code minutesAgo} minutes ago (it was paid for a later start). */
-    private void startedMinutesAgo(UUID id, long minutesAgo) {
+    /**
+     * The admin hands the scooter over at an odometer of 1000.0 km and the customer confirms the start; the rental
+     * then moved to have started {@code minutesAgo} minutes ago.
+     */
+    private void startedMinutesAgo(UUID id, long minutesAgo) throws Exception {
+        mvc.perform(json(as(admin, post("/api/admin/bookings/" + id + "/handover")), "{\"startOdometerKm\": 1000.0}"))
+                .andExpect(status().isOk());
+        mvc.perform(as(customer, post("/api/bookings/" + id + "/start"))).andExpect(status().isOk());
         Booking b = bookings.findById(id).orElseThrow();
-        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
+        b.setActualStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
+        b.setCustomerStartConfirmedAt(b.getActualStartTime());
         bookings.saveAndFlush(b);
     }
 
-    /** The initial LKR 250 paid by QR payment and approved, so the booking is ACTIVE and unstarted. */
+    /** The initial LKR 250 paid by QR payment and approved, so the booking is READY_FOR_PICKUP. */
     private UUID paidByQr() throws Exception {
         UUID id = signedBooking();
         mvc.perform(json(as(customer, post("/api/bookings/" + id + "/transfer")), "{\"method\": \"QR_TRANSFER\"}"))
@@ -227,9 +235,8 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
         t.setRecordedBy(admin);
         t.setCreatedAt(LocalDateTime.now().minusDays(1));
         transactions.save(t);
-        b.setStatus(BookingStatus.ACTIVE);
+        Rentals.started(b, LocalDateTime.now().minusMinutes(minutesAgo), admin, Rentals.START_ODOMETER_KM);
         b.getScooter().setStatus(ScooterStatus.RENTED);
-        b.setStartTime(LocalDateTime.now().minusMinutes(minutesAgo));
         bookings.saveAndFlush(b);
         return id;
     }
@@ -247,8 +254,10 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
                 "{\"status\": \"%s\", \"adminNote\": null, \"approvedAmount\": %s}".formatted(status, approved)));
     }
 
+    /** Ends the rental: an admin enters the ending odometer, unchanged since the handover; a customer sends none. */
     private ResultActions end(User who, UUID id) throws Exception {
-        return mvc.perform(as(who, put("/api/bookings/" + id + "/complete")));
+        return mvc.perform(json(as(who, put("/api/bookings/" + id + "/complete")),
+                who.getRole() == Role.USER ? "{}" : "{\"endOdometerKm\": 1000.0}"));
     }
 
     private ResultActions location(User who, UUID id) throws Exception {
@@ -287,7 +296,8 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
         review(repair, "REPORTED", "100").andExpect(status().isOk());
 
         end(admin, id).andExpect(status().isConflict()).andExpect(jsonPath("$.message").value(BLOCKED));
-        end(customer, id).andExpect(status().isConflict()).andExpect(jsonPath("$.message").value(BLOCKED));
+        // The customer never ends the rental: staff read the odometer at the counter.
+        end(customer, id).andExpect(status().isForbidden());
         Booking b = booking(id);
         assertThat(b.getStatus()).isEqualTo(BookingStatus.ACTIVE);
         assertThat(b.getEndedAt()).isNull();
@@ -306,7 +316,7 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
         UUID id = qrRental(30);
         report(id, false, "null"); // assistance only: no reimbursement can be approved on it
 
-        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"));
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"));
     }
 
     // ---------------------------------------------------------------- cash
@@ -350,7 +360,7 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
     @Test
     void aCompletedRentalCannotBeFinalisedOrSettledAgain() throws Exception {
         UUID id = qrRental(90); // 2 hours: 500, less 250 received = 250 due
-        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(250.00));
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(250.00));
         cash(admin, id, "balance", "250").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"));
 
         end(admin, id).andExpect(status().isConflict());
@@ -374,15 +384,19 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
         submit(id, null).andExpect(status().isOk());
         assertThat(booking(id).getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE); // not yet approved
         approve(pendingReceipt(id), "250").andExpect(status().isOk());
-        assertThat(booking(id).getScooter().getStatus()).isEqualTo(ScooterStatus.RENTED);
+        // Paid, not started: the scooter is RENTED only once the rental actually starts.
+        assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
+        assertThat(booking(id).getScooter().getStatus()).isEqualTo(ScooterStatus.AVAILABLE);
         startedMinutesAgo(id, 90);
+        assertThat(booking(id).getScooter().getStatus()).isEqualTo(ScooterStatus.RENTED);
         String repair = report(id, true, "150");
-        end(customer, id).andExpect(status().isConflict());
+        end(admin, id).andExpect(status().isConflict());
         review(repair, "RESOLVED", "100").andExpect(status().isOk());
 
-        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(150.00));
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.payment.balanceDue").value(150.00));
         submit(id, "BANK_TRANSFER").andExpect(status().isOk());
 
+        // The customer retrying the settlement of the ended rental changes nothing while the receipt waits.
         end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACTIVE"));
         cash(admin, id, "balance", "150").andExpect(status().isConflict());
         assertThat(booking(id).getStatus()).isEqualTo(BookingStatus.ACTIVE);
@@ -427,13 +441,14 @@ class WorkflowAuditTests extends PostgresIntegrationTest {
         location(customer, id).andExpect(status().isConflict()); // not paid yet: the receipt is not approved
 
         approve(pendingReceipt(id), "250").andExpect(status().isOk());
+        location(customer, id).andExpect(status().isConflict()); // paid, ready for pickup, not started
         startedMinutesAgo(id, 30);
         location(customer, id).andExpect(status().isAccepted());
         location(saveUser(Role.USER), id).andExpect(status().isNotFound());
         mvc.perform(as(admin, get("/api/admin/gps/bookings/" + id + "/history"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.points.length()").value(1));
 
-        end(customer, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"));
+        end(admin, id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"));
         location(customer, id).andExpect(status().isConflict());
     }
 }

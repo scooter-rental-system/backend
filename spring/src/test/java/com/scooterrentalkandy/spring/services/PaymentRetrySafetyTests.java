@@ -33,6 +33,7 @@ import com.scooterrentalkandy.spring.repository.ScooterRepository;
 import com.scooterrentalkandy.spring.repository.UserRepository;
 import com.scooterrentalkandy.spring.security.AuthUser;
 import com.scooterrentalkandy.spring.support.PostgresIntegrationTest;
+import com.scooterrentalkandy.spring.support.Rentals;
 import com.scooterrentalkandy.spring.support.TestPaymentGateway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -156,6 +157,9 @@ class PaymentRetrySafetyTests extends PostgresIntegrationTest {
         b.setScooter(s);
         b.setStatus(status);
         b.setStartTime(start);
+        if (status == BookingStatus.ACTIVE || status == BookingStatus.COMPLETED) {
+            Rentals.startedAt(b, b.getStartTime()); // a started rental has its actual start
+        }
         b.setContractSigned(true);
         b.setPickupLocation("Test pickup");
         b.setCreatedAt(LocalDateTime.now().minusHours(2));
@@ -187,11 +191,37 @@ class PaymentRetrySafetyTests extends PostgresIntegrationTest {
         return p;
     }
 
-    /** Paid (ACTIVE) booking whose rental starts at {@code start}. */
-    private Booking paidBooking(LocalDateTime start) {
-        Booking b = saveBooking(BookingStatus.ACTIVE, start, ScooterStatus.RENTED);
+    /** Paid booking waiting for pickup (READY_FOR_PICKUP), planned for {@code pickup}. */
+    private Booking readyBooking(LocalDateTime pickup) {
+        Booking b = saveBooking(BookingStatus.READY_FOR_PICKUP, pickup, ScooterStatus.AVAILABLE);
         savePayment(b, PaymentStatus.SUCCESS);
         return b;
+    }
+
+    /** Paid rental that actually started at {@code start}, handed over with the odometer at 1000.0 km. */
+    private Booking startedRental(LocalDateTime start) {
+        Booking b = saveBooking(BookingStatus.ACTIVE, start, ScooterStatus.RENTED);
+        bookings.saveAndFlush(Rentals.started(b, start, saveAdmin(), Rentals.START_ODOMETER_KM));
+        savePayment(b, PaymentStatus.SUCCESS);
+        return b;
+    }
+
+    private User saveAdmin() {
+        String id = unique();
+        User u = new User();
+        u.setEmail("retry.admin." + id + "@example.test");
+        u.setPasswordHash("not-a-real-hash");
+        u.setFullName("Retry Admin " + id);
+        u.setNicNumber("A" + id);
+        u.setRole(Role.ADMIN);
+        User saved = users.saveAndFlush(u);
+        createdUsers.add(saved.getUserId());
+        return saved;
+    }
+
+    private static AuthUser admin(Booking b) {
+        User u = b.getHandoverConfirmedBy();
+        return new AuthUser(u.getUserId(), u.getEmail(), u.getRole());
     }
 
     private static AuthUser auth(Booking b) {
@@ -233,7 +263,7 @@ class PaymentRetrySafetyTests extends PostgresIntegrationTest {
 
     @Test
     void aCancellationRefundWhoseAnswerIsLostIsNotRepeated() {
-        Booking b = paidBooking(LocalDateTime.now().plusDays(2));
+        Booking b = readyBooking(LocalDateTime.now().plusDays(2));
         String intentId = paymentOf(b).getStripePaymentId();
         gateway.loseRefundResponses(new PaymentProviderException("Connection reset", null));
 
@@ -241,7 +271,7 @@ class PaymentRetrySafetyTests extends PostgresIntegrationTest {
                 .isInstanceOf(PaymentProviderException.class);
 
         // Our side rolled back; the provider did refund.
-        assertThat(reload(b).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(reload(b).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         assertThat(paymentOf(b).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
         assertThat(transactionsOf(b, "REFUND")).isZero();
         assertThat(gateway.refunds()).hasSize(1);
@@ -259,11 +289,12 @@ class PaymentRetrySafetyTests extends PostgresIntegrationTest {
 
     @Test
     void aBalanceChargeWhoseAnswerIsLostIsNotRepeatedAndTheTotalIsKept() {
-        // Started 2.5 hours ago without GPS points: 3 hours x 250.00 = 750.00, of which 250.00 is paid.
-        Booking b = paidBooking(LocalDateTime.now().minusMinutes(150));
+        // Started 2.5 hours ago, returned with the odometer unchanged: 3 hours x 250.00 = 750.00, of which 250.00 is
+        // paid.
+        Booking b = startedRental(LocalDateTime.now().minusMinutes(150));
         gateway.loseChargeResponses(new PaymentProviderException("Read timed out", null));
 
-        assertThatThrownBy(() -> bookingService.complete(b.getBookingId(), auth(b)))
+        assertThatThrownBy(() -> bookingService.complete(b.getBookingId(), admin(b), Rentals.START_ODOMETER_KM))
                 .isInstanceOf(PaymentProviderException.class);
 
         // The settlement and invoice were committed before any money moved; the charge transaction rolled back.
@@ -276,8 +307,9 @@ class PaymentRetrySafetyTests extends PostgresIntegrationTest {
         assertThat(transactionsOf(b, "BALANCE")).isZero();
         assertThat(gateway.charges()).hasSize(1);
 
+        // The customer retries the settlement: no odometer reading is needed, the bill is the frozen one.
         gateway.loseChargeResponses(null);
-        var completed = bookingService.complete(b.getBookingId(), auth(b));
+        var completed = bookingService.complete(b.getBookingId(), auth(b), null);
 
         assertThat(completed.status()).isEqualTo(BookingStatus.COMPLETED);
         assertThat(gateway.charges()).hasSize(1);
@@ -358,7 +390,7 @@ class PaymentRetrySafetyTests extends PostgresIntegrationTest {
             delivery.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         }
 
-        assertThat(reload(b).getStatus()).isEqualTo(BookingStatus.ACTIVE);
+        assertThat(reload(b).getStatus()).isEqualTo(BookingStatus.READY_FOR_PICKUP);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_provider_events WHERE event_id = ?", Long.class,
                 success.id())).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM notifications WHERE user_id = ? AND channel = 'IN_APP'",
