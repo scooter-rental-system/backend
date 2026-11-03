@@ -28,7 +28,6 @@ import com.scooterrentalkandy.spring.entity.User;
 import com.scooterrentalkandy.spring.entity.enums.BookingStatus;
 import com.scooterrentalkandy.spring.entity.enums.Category;
 import com.scooterrentalkandy.spring.entity.enums.Role;
-import com.scooterrentalkandy.spring.entity.enums.ScooterStatus;
 import com.scooterrentalkandy.spring.repository.BookingRepository;
 import com.scooterrentalkandy.spring.repository.ContractRepository;
 import com.scooterrentalkandy.spring.repository.GearItemRepository;

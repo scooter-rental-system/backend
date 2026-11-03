@@ -6,7 +6,6 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.entity.Invoice;
-import com.scooterrentalkandy.spring.entity.Payment;
 import com.scooterrentalkandy.spring.entity.enums.PaymentMethod;
 import com.scooterrentalkandy.spring.entity.enums.PaymentStatus;
 

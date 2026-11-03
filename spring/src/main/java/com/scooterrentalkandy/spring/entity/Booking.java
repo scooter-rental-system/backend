@@ -5,7 +5,6 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -138,6 +137,7 @@ public class Booking {
     private LocalDateTime createdAt;
 
     @OneToMany(mappedBy = "booking", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
     private List<BookingGear> gear = new ArrayList<>();
 
     @PrePersist
