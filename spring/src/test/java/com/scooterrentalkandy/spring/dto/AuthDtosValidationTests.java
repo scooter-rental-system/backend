@@ -128,8 +128,10 @@ class AuthDtosValidationTests {
 
     @Test
     void profileUpdateRequiresFullNameAndPhone() {
-        assertThat(invalidFields(new UpdateProfileRequest("Name", "+94 70 000 0000", null, null, null))).isEmpty();
-        assertThat(invalidFields(new UpdateProfileRequest(" ", null, null, null, null)))
+        assertThat(invalidFields(new UpdateProfileRequest("Name", "+94 70 000 0000", null, null, null, null))).isEmpty();
+        assertThat(invalidFields(new UpdateProfileRequest(" ", null, null, null, null, null)))
                 .containsExactlyInAnyOrder("fullName", "phone");
+        assertThat(invalidFields(new UpdateProfileRequest("Name", "+94 70 000 0000", null, null, null, "not-a-nic")))
+                .containsExactly("nicNumber");
     }
 }

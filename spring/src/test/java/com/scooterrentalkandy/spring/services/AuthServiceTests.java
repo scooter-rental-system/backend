@@ -282,7 +282,7 @@ class AuthServiceTests {
         when(users.findById(rider.getUserId())).thenReturn(Optional.of(rider));
 
         UserResponse response = auth.updateProfile(rider.getUserId(),
-                new UpdateProfileRequest("  Renamed Rider ", " +94 77 222 2222 ", " ", "", "  India "));
+                new UpdateProfileRequest("  Renamed Rider ", " +94 77 222 2222 ", " ", "", "  India ", null));
 
         assertThat(rider.getFullName()).isEqualTo("Renamed Rider");
         assertThat(rider.getPhone()).isEqualTo("+94 77 222 2222");
@@ -296,5 +296,46 @@ class AuthServiceTests {
         assertThat(rider.getIsActive()).isTrue();
         assertThat(response).isEqualTo(UserResponse.from(rider));
         verify(jwt, never()).issue(any());
+    }
+
+    @Test
+    void updateProfileCanCompleteOnlyAMissingNic() {
+        User rider = existing(true);
+        rider.setNicNumber(" ");
+        when(users.findById(rider.getUserId())).thenReturn(Optional.of(rider));
+
+        UserResponse response = auth.updateProfile(rider.getUserId(),
+                new UpdateProfileRequest("Rider", "+94 70 111 1111", null, null, null, "  912345678v "));
+
+        assertThat(rider.getNicNumber()).isEqualTo("912345678V");
+        assertThat(response.hasNicNumber()).isTrue();
+        verify(users).existsByNicNumber("912345678V");
+    }
+
+    @Test
+    void updateProfileRequiresANicWhenTheExistingValueIsMissing() {
+        User rider = existing(true);
+        rider.setNicNumber(null);
+        when(users.findById(rider.getUserId())).thenReturn(Optional.of(rider));
+
+        assertThatThrownBy(() -> auth.updateProfile(rider.getUserId(),
+                new UpdateProfileRequest("Rider", "+94 70 111 1111", null, null, null, null)))
+                .isInstanceOfSatisfying(ApiException.class, ex -> {
+                    assertThat(ex.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(ex.getMessage()).contains("NIC");
+                });
+        verify(users, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updateProfileCannotReplaceAnExistingNic() {
+        User rider = existing(true);
+        when(users.findById(rider.getUserId())).thenReturn(Optional.of(rider));
+
+        assertThatThrownBy(() -> auth.updateProfile(rider.getUserId(),
+                new UpdateProfileRequest("Rider", "+94 70 111 1111", null, null, null, "200012345678")))
+                .isInstanceOfSatisfying(ApiException.class,
+                        ex -> assertThat(ex.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST));
+        verify(users, never()).saveAndFlush(any());
     }
 }
