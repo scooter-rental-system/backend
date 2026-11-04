@@ -1,0 +1,26 @@
+package com.scooterrentalkandy.spring.services;
+
+import java.util.UUID;
+
+/**
+ * Published (synchronously, in the same transaction) when the provider confirms a payment, or an admin records cash
+ * received or handed back at the rental counter, so the booking lifecycle can react without the payment module
+ * depending on it.
+ */
+public final class PaymentEvents {
+
+    private PaymentEvents() {
+    }
+
+    /** The initial charge succeeded: the booking is ready for pickup (READY_FOR_PICKUP). */
+    public record InitialPaymentSucceeded(UUID bookingId) {
+    }
+
+    /** The remaining balance was paid online after a failed completion charge: the booking can complete. */
+    public record BalancePaid(UUID bookingId) {
+    }
+
+    /** An admin recorded the cash refund owed at the end of a rental: the booking can complete. */
+    public record CashRefunded(UUID bookingId) {
+    }
+}
