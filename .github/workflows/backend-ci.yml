@@ -1,0 +1,51 @@
+name: Backend CI & Deploy Trigger
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+
+jobs:
+  test-and-build:
+    name: Gradle Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Run Tests and Build JAR
+        working-directory: spring
+        run: |
+          chmod +x ./gradlew
+          ./gradlew test --no-daemon
+          ./gradlew bootJar --no-daemon -x test
+
+  trigger-infra-deploy:
+    name: Trigger Infra Deployment
+    needs: [test-and-build]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch Event to Infra Repo
+        env:
+          DISPATCH_TOKEN: ${{ secrets.INFRA_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering deployment in scooter-rental-system/infra..."
+          curl -s -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            https://api.github.com/repos/scooter-rental-system/infra/dispatches \
+            -d "{\"event_type\": \"backend-updated\", \"client_payload\": {\"branch\": \"${{ github.ref_name }}\", \"commit\": \"${{ github.sha }}\"}}" \
+            || echo "Repository dispatch triggered (or skipped if token not configured)."
