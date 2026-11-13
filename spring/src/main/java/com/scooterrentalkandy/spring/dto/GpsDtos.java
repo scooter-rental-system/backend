@@ -23,7 +23,11 @@ public final class GpsDtos {
             @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude,
             /** SDS 2.2: required, 0 to 999.99 km/h. */
             @NotNull @DecimalMin("0.00") @DecimalMax("999.99") BigDecimal speedKmh,
-            LocalDateTime recordedAt,
+            /**
+             * Optional ISO-8601 time of the reading: with an offset ("2026-11-06T06:53:00Z", "+05:30"), as trackers
+             * usually send it, or without one, taken as server time. GpsService converts it to the server's clock.
+             */
+            String recordedAt,
             /** Optional (SDS 4.3 payload). If sent, it must be the scooter's rental in progress. */
             UUID bookingId) {
     }

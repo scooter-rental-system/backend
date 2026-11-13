@@ -11,6 +11,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
@@ -148,9 +151,14 @@ class GpsControllerTests extends PostgresIntegrationTest {
     }
 
     private static String devicePing(Scooter s, String lat, String lng, String speed, LocalDateTime at) {
+        return devicePingAt(s, lat, lng, speed, at == null ? null : at.toString());
+    }
+
+    /** A report whose recordedAt is sent exactly as given. */
+    private static String devicePingAt(Scooter s, String lat, String lng, String speed, String recordedAt) {
         return """
                 {"scooterCode": "%s", "latitude": %s, "longitude": %s, "speedKmh": %s%s}"""
-                .formatted(s.getCode(), lat, lng, speed, at == null ? "" : ", \"recordedAt\": \"" + at + "\"");
+                .formatted(s.getCode(), lat, lng, speed, recordedAt == null ? "" : ", \"recordedAt\": \"" + recordedAt + "\"");
     }
 
     private static MockHttpServletRequestBuilder fromDevice(String key, String body) {
@@ -208,6 +216,41 @@ class GpsControllerTests extends PostgresIntegrationTest {
         mvc.perform(fromDevice(DEVICE_KEY, devicePing(scooter, "7.28", "80.62", "10", now.minusMinutes(20))))
                 .andExpect(status().isAccepted());
         assertThat(logOf(rental)).hasSize(2);
+    }
+
+    /** Regression: a UTC "...Z" time was read as server time, so the reading looked hours old and left the rental. */
+    @Test
+    void aDeviceTimeWithAnOffsetIsStoredInServerTimeOnTheRental() throws Exception {
+        Scooter scooter = saveScooter();
+        Booking rental = booking(saveUser(Role.USER), scooter, BookingStatus.ACTIVE, now.minusMinutes(30));
+        OffsetDateTime reading = now.atZone(ZoneId.systemDefault()).toOffsetDateTime();
+        // Offsets other than the server's own, so the conversion is exercised whatever zone runs the tests.
+        ZoneOffset other = reading.getOffset().equals(ZoneOffset.UTC) ? ZoneOffset.ofHoursMinutes(5, 30) : ZoneOffset.UTC;
+        String utc = reading.withOffsetSameInstant(ZoneOffset.UTC).toString();
+        String shifted = reading.minusMinutes(1).withOffsetSameInstant(other).toString();
+        assertThat(utc.endsWith("Z")).isTrue();
+
+        mvc.perform(fromDevice(DEVICE_KEY, devicePingAt(scooter, "7.291000", "80.632000", "20", shifted)))
+                .andExpect(status().isAccepted());
+        mvc.perform(fromDevice(DEVICE_KEY, devicePingAt(scooter, "7.292000", "80.633000", "21", utc)))
+                .andExpect(status().isAccepted());
+
+        assertThat(logOf(rental)).extracting(GpsPing::getRecordedAt).containsExactly(now.minusMinutes(1), now);
+        Scooter seen = scooters.findById(scooter.getScooterId()).orElseThrow();
+        assertThat(seen.getLastSeenAt()).isEqualTo(now);
+        assertThat(seen.getLatitude()).isEqualTo(7.292);
+    }
+
+    @Test
+    void anUnreadableDeviceTimeIs400() throws Exception {
+        Scooter scooter = saveScooter();
+        Booking rental = booking(saveUser(Role.USER), scooter, BookingStatus.ACTIVE, now.minusHours(1));
+
+        mvc.perform(fromDevice(DEVICE_KEY, devicePingAt(scooter, "7.29", "80.63", "10", "06/11/2026 12:23")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value("recordedAt must be an ISO-8601 date-time, such as 2026-11-06T06:53:00Z"));
+        assertThat(logOf(rental)).isEmpty();
     }
 
     @Test

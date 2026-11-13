@@ -5,6 +5,11 @@ import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.TemporalAccessor;
 import java.util.List;
 import java.util.UUID;
 import com.scooterrentalkandy.spring.dto.GpsDtos.BookingGpsHistory;
@@ -162,12 +167,33 @@ public class GpsService {
      */
     @Transactional
     public void recordFromDevice(GpsDtos.PingRequest req) {
-        if (req.recordedAt() != null && req.recordedAt().isAfter(LocalDateTime.now(clock).plus(DEVICE_CLOCK_TOLERANCE))) {
+        LocalDateTime recordedAt = deviceTime(req.recordedAt(), clock.getZone());
+        if (recordedAt != null && recordedAt.isAfter(LocalDateTime.now(clock).plus(DEVICE_CLOCK_TOLERANCE))) {
             throw ApiException.badRequest("recordedAt is in the future");
         }
         Scooter scooter = scooters.findByCodeIgnoreCase(req.scooterCode().trim())
                 .orElseThrow(() -> ApiException.notFound("Scooter"));
-        record(scooter, req.latitude(), req.longitude(), req.speedKmh(), req.recordedAt(), req.bookingId());
+        record(scooter, req.latitude(), req.longitude(), req.speedKmh(), recordedAt, req.bookingId());
+    }
+
+    /**
+     * A tracker's reading time in the server's zone. GPS trackers usually report UTC ("...Z") or an offset; that
+     * instant is converted, so a UTC reading is neither shown as hours old nor left out of the rental it belongs to.
+     * A time without an offset is taken as server time. Null when the device sent none.
+     */
+    static LocalDateTime deviceTime(String recordedAt, ZoneId zone) {
+        if (recordedAt == null || recordedAt.isBlank()) {
+            return null;
+        }
+        try {
+            TemporalAccessor time = DateTimeFormatter.ISO_DATE_TIME.parseBest(recordedAt.trim(), OffsetDateTime::from,
+                    LocalDateTime::from);
+            return time instanceof OffsetDateTime withOffset
+                    ? withOffset.atZoneSameInstant(zone).toLocalDateTime()
+                    : (LocalDateTime) time;
+        } catch (DateTimeParseException e) {
+            throw ApiException.badRequest("recordedAt must be an ISO-8601 date-time, such as 2026-11-06T06:53:00Z");
+        }
     }
 
     /**
