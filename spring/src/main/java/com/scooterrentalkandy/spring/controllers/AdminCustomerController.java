@@ -30,9 +30,12 @@ public class AdminCustomerController {
         return users.findByRoleOrderByCreatedAtDesc(Role.USER).stream().map(UserResponse::from).toList();
     }
 
+    /** Customer accounts only: an admin account is reported as not found, the same as an unknown id. */
     @GetMapping("/{id}")
     public UserResponse get(@PathVariable UUID id) {
-        return UserResponse.from(users.findById(id).orElseThrow(() -> ApiException.notFound("Customer")));
+        return UserResponse.from(users.findById(id)
+                .filter(user -> user.getRole() == Role.USER)
+                .orElseThrow(() -> ApiException.notFound("Customer")));
     }
 
     @PatchMapping("/{id}/active")

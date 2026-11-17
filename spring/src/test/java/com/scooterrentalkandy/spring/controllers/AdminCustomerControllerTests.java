@@ -103,15 +103,18 @@ class AdminCustomerControllerTests extends PostgresIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
-    /** Current behaviour: the single-customer lookup does not check the role, so it also returns admin accounts. */
+    /** BE-051: the single-customer lookup returns customer accounts only, like the list. */
     @Test
-    void getByIdAlsoReturnsAdminAccounts() throws Exception {
-        User admin = saveUser(Role.ADMIN);
-        User otherAdmin = saveUser(Role.ADMIN);
-
-        mvc.perform(as(admin, get(CUSTOMERS + "/" + otherAdmin.getUserId())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.role").value("ADMIN"));
+    void getByIdDoesNotReturnAdminAccounts() throws Exception {
+        for (Role caller : new Role[] {Role.ADMIN, Role.SUPER_ADMIN}) {
+            User admin = saveUser(caller);
+            for (User staff : new User[] {saveUser(Role.ADMIN), saveUser(Role.SUPER_ADMIN), admin}) {
+                mvc.perform(as(admin, get(CUSTOMERS + "/" + staff.getUserId())))
+                        .andExpect(status().isNotFound())
+                        .andExpect(jsonPath("$.message").value("Customer not found"))
+                        .andExpect(jsonPath("$.email").doesNotExist());
+            }
+        }
     }
 
     @Test
