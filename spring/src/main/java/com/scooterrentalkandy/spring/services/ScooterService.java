@@ -101,12 +101,20 @@ public class ScooterService {
         return response(s);
     }
 
-    /** SDS 8.3: a scooter leaving the fleet is soft-deleted, keeping its booking history. */
+    /**
+     * SDS 8.3: a scooter leaving the fleet is soft-deleted, keeping its booking history. It is refused while a
+     * pending, ready or active booking holds the scooter; the scooter is locked, as booking creation does, so a
+     * booking made at the same moment cannot slip past the check.
+     */
     @Transactional
     public ScooterResponse remove(UUID id) {
-        Scooter s = find(id);
+        Scooter s = scooters.findByIdForUpdate(id).orElseThrow(() -> ApiException.notFound("Scooter"));
         if (s.getStatus() == ScooterStatus.RENTED) {
             throw ApiException.conflict("Scooter is out on a rental; it is released when the rental ends");
+        }
+        if (bookings.existsByScooter_ScooterIdAndStatusIn(id, BookingStatus.BLOCKING)) {
+            throw ApiException.conflict(
+                    "Scooter has a pending or active booking; cancel it before removing the scooter");
         }
         s.setDeleted(true);
         return response(s);
